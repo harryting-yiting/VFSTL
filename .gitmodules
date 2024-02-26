@@ -1,0 +1,3 @@
+[submodule "GCRL-LTL"]
+	path = GCRL-LTL
+	url = https://github.com/harryting-yiting/GCRL-LTL.git
