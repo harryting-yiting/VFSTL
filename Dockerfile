@@ -1,5 +1,6 @@
 # Use Ubuntu 20.04 LTS as the base image
-FROM ubuntu:20.04
+FROM nvidia/cuda:12.3.2-devel-ubuntu20.04
+
 
 # Avoid prompts from apt during build
 ARG DEBIAN_FRONTEND=noninteractive
@@ -18,13 +19,14 @@ RUN wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -
     && rm ~/miniconda.sh
 
 ENV PATH /opt/conda/bin:$PATH
-
+RUN conda init
 RUN conda create -n myenv python=3.7
 
 WORKDIR /app
 COPY test.py /app
-
-RUN conda run -n myenv conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia
+RUN conda run -n myenv pip3 install torch torchvision torchaudio
+# Install pytorch with pip to use cuda. The conda version does not work.
+#RUN conda run -n myenv conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia
 RUN conda run -n myenv python test.py
 
 # install mojuco
@@ -33,8 +35,8 @@ RUN apt-get update -q \
     curl
 RUN DEBIAN_FRONTEND=noninteractive apt-get install -y git 
 RUN DEBIAN_FRONTEND=noninteractive apt-get install -y vim 
-RUN DEBIAN_FRONTEND=noninteractive apt-get install -y virtualenv 
-RUN DEBIAN_FRONTEND=noninteractive apt-get install -y wget \
+RUN apt-get update -q \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y wget \
     xpra 
 
 RUN apt-get update -q \
@@ -71,17 +73,46 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get install -q -y gcc patchelf
 RUN DEBIAN_FRONTEND=noninteractive apt-get install -q -y libffi-dev
 RUN conda run -n myenv pip install "cython<3"
 RUN conda run -n myenv pip install --no-cache-dir -r requirements.txt
-RUN conda run -n myenv pip install --no-cache-dir -r requirements.dev.txt
+#RUN conda run -n myenv pip install --no-cache-dir -r requirements.dev.txt
 RUN conda run -n myenv python setup.py develop
-RUN conda init
+
+# install for GCRL-LTL
+# ltl2ba
+WORKDIR /app/vfstl/lib/ltl2ba-1.2b1
+COPY ./ltl2ba-1.2b1 /app/vfstl/lib/ltl2ba-1.2b1 
+RUN apt-get update -q \
+     && apt-get install -y build-essential
+ENV PATH /app/vfstl/ltl2ba-1.2b1/:${PATH}
+RUN make
+
 # install safetyGym
+WORKDIR /app/vfstl
+#
 RUN conda run -n myenv conda install -c conda-forge pygraphviz
-RUN conda run -n myenv pip install setuptools==65.5.0 
+
 RUN conda run -n myenv pip install wheel==0.38.0
 RUN conda run -n myenv pip install stable-baselines3==1.6.2
+RUN conda run -n myenv pip install setuptools==65.5.0 
+
+WORKDIR /app/vfstl/lib/safety-gym/
+COPY ./GCRL-LTL/zones/envs/safety/safety-gym/ /app/vfstl/lib/safety-gym
+RUN conda run -n myenv pip install -e /app/vfstl/lib/safety-gym/
+
+# install RTAMT
+RUN apt-get update -q \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    libboost-all-dev \
+    antlr4 \
+    cmake 
+WORKDIR /app/vfstl/lib/
+RUN git clone https://github.com/harryting-yiting/rtamt.git
+WORKDIR /app/vfstl/lib/rtamt/rtamt/
+RUN mkdir build && cd build && cmake -DPythonVersion=3 ../ && make
+WORKDIR /app/vfstl/lib/rtamt/
+RUN conda run -n myenv pip install .
 WORKDIR /app/vfstl
-COPY . /app/vfstl/
-RUN conda run -n myenv pip install -e ./GCRL-LTL/zones/envs/safety/safety-gym/
+ENV PATH /app/vfstl/lib/ltl2ba-1.2b1/:${PATH}
+RUN echo "conda activate myenv" >> ~/.bashrc
 # install antRoom
 
 # install pybullet
