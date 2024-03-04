@@ -1,5 +1,8 @@
 # VFSTL
 
+## Pull the project with sub-modules
+1. `git pull --recurse-submodules git@github.com:harryting-yiting/VFSTL.git`
+
 ## Prerequisites
 1. docker engine
 2. nvidia-docker-toolkit
