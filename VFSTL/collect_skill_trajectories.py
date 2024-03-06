@@ -6,8 +6,12 @@ import numpy as np
 import gym
 from stable_baselines3 import PPO
 import sys
-sys.path.append("/app/vfstl/src/GCRL-LTL/zones")
 
+from tqdm import tqdm, trange
+ 
+import concurrent.futures
+
+sys.path.append("/app/vfstl/src/GCRL-LTL/zones")
 from envs import ZoneRandomGoalEnv
 from envs.utils import get_zone_vector
 from rl.traj_buffer import TrajectoryBufferDataset
@@ -16,9 +20,20 @@ ZONE_OBS_DIM = 24
 
 
 def get_goal_value(state, policy, zone_vector, device):
+    # get values of other goals except the current goal
     goal_value = {'J': None, 'W': None, 'R': None, 'Y': None}
     for zone in zone_vector:
         if not np.allclose(state[-ZONE_OBS_DIM:], zone_vector[zone]):
+            with torch.no_grad():
+                obs = torch.from_numpy(np.concatenate((state[:-ZONE_OBS_DIM], zone_vector[zone]))).unsqueeze(dim=0).to(device)
+                goal_value[zone] = policy.predict_values(obs)[0].item()
+    
+    return goal_value
+
+def get_all_goal_value(state, policy, zone_vector, device):
+    # get values of all goals
+    goal_value = {'J': None, 'W': None, 'R': None, 'Y': None}
+    for zone in zone_vector:
             with torch.no_grad():
                 obs = torch.from_numpy(np.concatenate((state[:-ZONE_OBS_DIM], zone_vector[zone]))).unsqueeze(dim=0).to(device)
                 goal_value[zone] = policy.predict_values(obs)[0].item()
@@ -38,7 +53,13 @@ def main(args):
     buffer_size = args.buffer_size
     model_path = args.model_path
     exp_name = args.exp_name
-    
+        
+    # build dataset
+    skipped_steps = args.skipped_steps
+    random_goal = args.random_goal
+    surfix = args.surfix
+
+
     model = PPO.load(model_path, device=device)
     env = ZoneRandomGoalEnv(
         env=gym.make('Zones-8-v0', timeout=timeout), 
@@ -48,46 +69,58 @@ def main(args):
         rewards=[0, 1],
         device=device,
     )
-    
-    # build dataset
-    skipped_steps = 40
+
     current_size = 0
     
     vf_dimension = 4
     vf_dynamic_dataset = np.zeros((buffer_size, 2*vf_dimension+1))
     with torch.no_grad():
-        while current_size < buffer_size:
-            prev_obs = env.reset()
-            obs = prev_obs
-            prev_values = from_real_dict_to_vector(get_goal_value(prev_obs, model.policy, get_zone_vector(), device))
-            local_steps = 0
-            eval_done = False
-            while not eval_done and local_steps < timeout:
-                action, _ = model.predict(obs, deterministic=True)
-                obs, reward, eval_done, info = env.step(action)
-                local_steps = local_steps + 1
-                if local_steps % skipped_steps == 0 :
-                    values = from_real_dict_to_vector(get_goal_value(obs, model.policy, get_zone_vector(), device))
-                    goal_index = env.goals.index(env.current_goal())
-                    tmp_row = np.concatenate(([goal_index], prev_values, values))
-                    vf_dynamic_dataset[current_size] = tmp_row
-                    current_size += 1
-                    prev_values = values
-                    prev_obs = obs
+        with tqdm(total=buffer_size) as pbar:
+            while current_size < buffer_size:
+                prev_obs = env.reset()
+                obs = prev_obs
+                prev_values = from_real_dict_to_vector(get_all_goal_value(prev_obs, model.policy, get_zone_vector(), device))
+                local_steps = 0
+                eval_done = False
+                # we want the model to keep running even the one signal has already been true
+                while local_steps < timeout and current_size < buffer_size:
+                    action, _ = model.predict(env.current_observation(), deterministic=True)
+                    obs, reward, eval_done, info = env.step(action)
+                    local_steps = local_steps + 1
+                    if local_steps % skipped_steps == 0 :
+                        values = from_real_dict_to_vector(get_all_goal_value(obs, model.policy, get_zone_vector(), device))
+                        goal_index = env.goal_index
+                        tmp_row = np.concatenate(([goal_index], prev_values, values))
+                        vf_dynamic_dataset[current_size] = tmp_row
+                        current_size += 1
+                        prev_values = values
+                        # change to another goal and execute policy
+                        if random_goal:
+                            env.fix_goal(np.random.choice(env.goals))
+                        pbar.update(1)
 
-    np.save("/app/vfstl/src/VFSTL/dynamic_models/datasets/test", vf_dynamic_dataset)
-
+    np.save("/app/vfstl/src/VFSTL/dynamic_models/datasets/zone_dynamic_{}_{}_{}_{}_{}".format(
+        skipped_steps, timeout, buffer_size, random_goal, surfix), vf_dynamic_dataset)
+    
+    return "/app/vfstl/src/VFSTL/dynamic_models/datasets/zone_dynamic_{}_{}_{}_{}_{}".format(
+        skipped_steps, timeout, buffer_size, random_goal, surfix)
 
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--device', type=str, default='cuda')
-    parser.add_argument('--timeout', type=int, default=1000)
-    parser.add_argument('--buffer_size', type=int, default=20)
+
+    parser.add_argument('--skipped_steps', type=int, default=100)
+    parser.add_argument('--timeout', type=int, default=10000)
+    parser.add_argument('--buffer_size', type=int, default=12500) # 500,000 / 80 = 6250
+    parser.add_argument('--random_goal', type=int, default=1)
+    
+
     parser.add_argument('--seed', type=int, default=123)
     parser.add_argument('--model_path', type=str, default='/app/vfstl/src/GCRL-LTL/zones/models/goal-conditioned/best_model_ppo_8')
     parser.add_argument('--exp_name', type=str, default='traj_dataset')
     parser.add_argument('--execution_mode', type=str, default='primitives', choices=('primitives'))
+    parser.add_argument('--surfix', type=int, default=0)
     
     args = parser.parse_args()
 
@@ -96,5 +129,11 @@ if __name__ == '__main__':
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
-
-    main(args)
+    max_thread = 50
+    with concurrent.futures.ProcessPoolExecutor(max_workers=max_thread) as executor:
+        futures = []
+        for i in range(0, max_thread):
+            args.surfix = i
+            futures.append(executor.submit(main, args))
+        results = [future.result() for future in concurrent.futures.as_completed(futures)]
+        print(results)

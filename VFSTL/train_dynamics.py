@@ -2,8 +2,17 @@ import numpy as np
 import torch
 import torch.nn as nn
 from datetime import datetime
+import gym
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data.dataset import Dataset
+import sys
+from collect_skill_trajectories import get_all_goal_value, from_real_dict_to_vector
+from stable_baselines3 import PPO
+
+sys.path.append("/app/vfstl/src/GCRL-LTL/zones")
+from envs import ZoneRandomGoalEnv
+from envs.utils import get_zone_vector
+from rl.traj_buffer import TrajectoryBufferDataset
 
 def one_hot_encoding(arr:np.ndarray, num_class:int):
     encoded_arr = np.zeros((arr.size, num_class), dtype=int)
@@ -11,7 +20,7 @@ def one_hot_encoding(arr:np.ndarray, num_class:int):
     return encoded_arr
 
 
-class VFDynamics(nn.Module):
+class VFDynamicsMLP(nn.Module):
     def __init__(self, state_dim) -> None:
         super().__init__()
         
@@ -38,17 +47,16 @@ class VFDynamics(nn.Module):
 class VFDynamicDataset(Dataset):
     def __init__(self, data: np.ndarray, num_vf:int ) -> None:
         self.num_vf = num_vf
-        self.vf_class:int = data[:, 0]
-        self.v_t = data[:, 1:num_vf]
-        self.v_next_t = data[:, num_vf:2*num_vf]
+        self.vf_class = nn.functional.one_hot(torch.from_numpy(data[:, 0]).to(torch.int64), num_classes= self.num_vf)
+        self.v_t = data[:, 1:num_vf+1]
+        self.v_next_t = data[:, num_vf+1:2*num_vf+1]
         
     def __len__(self):
         return np.shape(self.v_t)[0]
     
     def __getitem__(self, index):
-        return torch.concatenate((
-            nn.functional.one_hot(torch.from_numpy(self.vf_class), torch.from_numpy(self.num_vf)),
-            torch.from_numpy(self.v_t[index])), 1), torch.from_numpy(self.v_next_t[index])
+        return torch.concatenate((self.vf_class[index], 
+                                  torch.from_numpy(self.v_t[index]))).to(torch.float32), torch.from_numpy(self.v_next_t[index]).to(torch.float32)
     
     
 class VFDynamicTrainer():
@@ -147,35 +155,133 @@ class VFDynamicTrainer():
 
             epoch_number += 1
 
+
+class VFDynamics():
+
+    def __init__(self, NNModel, size_discrete_actions) -> None:
+        self.NNModel = NNModel
+        self.size_discrete_actions = size_discrete_actions
+
+    def one_step_simulation(self, controls, vfs) -> None:
+        # controls: R N should a vector of RN for parallel prediction of multiple trajectories
+        # vfs: a array of R N*M, with N is the number of samples and M is equal to the total amount of skills
+        
+        # one_hot to controls
+        controls = nn.functional.one_hot(controls.to(torch.int64), num_classes= vfs.size()[1])
+
+        # concat control with vfs
+        nn_input = torch.concatenate((controls, vfs), 1)
+        # feed them into NN and get prediction
+        
+        return self.NNModel(nn_input.to(torch.float32))
+
+    def forward_simulation(self, control_seqs, init_vfs):
+        # control_seqs: R: N * T, N: batch size, T: timesteps
+        # init_vfs: R M, M: number of value functions
+        # return N* T * M, no initial_vfs
+        batch_num = control_seqs.size()[0]
+        timesteps = control_seqs.size()[1]
+        # s_t+1 = NN(st)
+        
+        prev_vfs = init_vfs.repeat((batch_num, 1))
+        vf_prediction = torch.zeros((batch_num, timesteps, init_vfs.size()[0]))
+        
+        for i in range(0, timesteps):
+            vfs = self.one_step_simulation(control_seqs[:, i], prev_vfs)
+            prev_vfs = vfs
+            vf_prediction[:,i,:] = vfs
+        
+        return vf_prediction
+
+
+class RandomShootingOptimization():
+
+    def __init__(self, dynamics, cost_fn, constraints, timesteps) -> None:
+        self.dynamics = dynamics
+        self.cost_fn = cost_fn
+        self.constraints = constraints
+        self.timesteps = timesteps
+
+    def optimize(self, num_sample_batches, batch_size, multiprocessing, init_state, device):
+        # return the best sample and there costs
+        mini_control = torch.randint(0, self.dynamics.size_discrete_actions, (self.timesteps,), device=device)
+        mini_state = []
+        mini_cost = 1000000
+        for i in range(0, num_sample_batches):
+            # generate random action sequence with batch_size * timesteps
+            controls = torch.randint(0, self.dynamics.size_discrete_actions, (batch_size, self.timesteps), device=device) 
+            # run simulation
+            states = self.dynamics.forward_simulation(controls, init_state)
+            costs = self.cost_fn(states)
+            mini_index = torch.argmin(costs)
+             # get best control and cost
+            if costs[mini_index] < mini_cost:
+                mini_cost = costs[mini_index]
+                mini_control = controls[mini_index]
+                mini_state = states[mini_index]
+        
+        return mini_control, mini_state, mini_cost
+
+
+def test_random_shooting():
+        # Check if CUDA is available
+    if torch.cuda.is_available():
+        device = torch.device("cuda:1")
+        print("CUDA is available. Training on GPU.")
+    else:
+        device = torch.device("cpu")
+        print("CUDA is not available. Training on CPU.")
+
+    def cost_fn(state):
+        return torch.randn(state.size()[0])
+    model_path = '/app/vfstl/src/GCRL-LTL/zones/models/goal-conditioned/best_model_ppo_8'
+    model = PPO.load(model_path, device=device)
+    timeout = 10000
+    env = ZoneRandomGoalEnv(
+        env=gym.make('Zones-8-v0', timeout=timeout), 
+        primitives_path='/app/vfstl/src/GCRL-LTL/zones/models/primitives', 
+        goals_representation=get_zone_vector(),
+        use_primitves=True,
+        rewards=[0, 1],
+        device=device,
+    )
+
+    obs = env.reset()
+    init_values = torch.from_numpy(from_real_dict_to_vector(get_all_goal_value(obs, model.policy, get_zone_vector(), device))).to(device)
+
+    vf_num = 4
+    model = VFDynamicsMLP(vf_num)
+    model.load_state_dict(torch.load("/app/vfstl/src/VFSTL/dynamic_models/test_model_20240306_152632_3"))
+    dynamics = VFDynamics(model.to(device), 4)
+    op = RandomShootingOptimization(dynamics, cost_fn, cost_fn, 10)
+    print(op.optimize(1024, 1024, False, init_values, device))
+    
+
+
 def main():
     # Check if CUDA is available
     if torch.cuda.is_available():
-        device = torch.device("cuda:0")
+        device = torch.device("cuda:1")
         print("CUDA is available. Training on GPU.")
     else:
         device = torch.device("cpu")
         print("CUDA is not available. Training on CPU.")
     
-    raw_data = np.load("/app/vfstl/src/VFSTL/dynamic_models/datasets/test.npy")
-
-    print(raw_data)
-    # num_vf = 10
-    # train_dataset_len = 10000
-    # vali_dataset_len = 300
-    # train_raw_data = torch.rand(train_dataset_len, 4)
-    # vali_raw_data = torch.rand(vali_dataset_len, 4)
-    # train_loader = torch.utils.data.DataLoader(VFDynamicDataset(train_raw_data), batch_size=4, shuffle=True)
-    # val_loader = torch.utils.data.DataLoader(VFDynamicDataset(vali_raw_data), batch_size=4, shuffle=True)
+    raw_data = np.load("/app/vfstl/src/VFSTL/dynamic_models/datasets/zone_dynamic_100_10000_20_1_0.npy")
+    num_vf = 4
+    train_dataset_len = 8
+    vali_dataset_len = 5
+    train_raw_data = raw_data[:train_dataset_len]
+    vali_raw_data = raw_data[train_dataset_len: train_dataset_len+vali_dataset_len]
+    train_loader = torch.utils.data.DataLoader(VFDynamicDataset(train_raw_data, num_vf), batch_size=2, shuffle=True)
+    val_loader = torch.utils.data.DataLoader(VFDynamicDataset(vali_raw_data, num_vf), batch_size=2, shuffle=True)
     
     
-    # dy_model = VFDynamics(2)
-    # trainer = VFDynamicTrainer(dy_model, train_loader, val_loader, 5, "test", device)
-    # trainer.train()
-    
-    # test one_hot
-    # print(one_hot_encoding(np.array(([[1,2,3],[1,2,3]])), 4))
-    
+    dy_model = VFDynamicsMLP(num_vf)
+    trainer = VFDynamicTrainer(dy_model, train_loader, val_loader, 5, "test", device)
+    trainer.train()
     
 if __name__ == "__main__":
-    main()
+    #main()
+    test_random_shooting()
     

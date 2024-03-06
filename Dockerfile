@@ -117,5 +117,7 @@ RUN echo "conda activate myenv" >> ~/.bashrc
 
 # install pybullet
 
+# install more conda packages
+RUN conda run -n myenv conda install -y -c pandas tqdm
 # Set the default command for the container
 CMD ["bash"]
