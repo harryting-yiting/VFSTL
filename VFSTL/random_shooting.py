@@ -43,26 +43,35 @@ class RandomShootingOptimization():
         
         return mini_control, mini_state, mini_cost
 
-
 def stl_cost_fn(states):
-    spec = rtamt.StlDiscreteTimeSpecification()
-    spec.declare_var('a0', 'float')
-    spec.spec = 'eventually[0,10](a0 >= 0.8)'
+    # state N* T * M
+    spec = rtamt.StlDiscreteTimeOfflineSpecification()
+    spec.declare_var('a', 'float')
+    spec.spec = 'eventually[0,10](a >= 0.8)'
     try:
         spec.parse()
-        spec.pastify()
+        #spec.pastify()
     except rtamt.RTAMTException as err:
         print('RTAMT Exception: {}'.format(err))
         sys.exit()
+
     a0 = states[:,:, 0]
-    rob = spec.evaluate(['a0', a0])
-    return rob
+    robs = []
+    for batch in range(0,states.size()[0]):
+        dataset = {
+        'time': [i for i in range(0, a0.size()[1])],
+        'a': a0[batch, :].tolist(),
+        }
+        # spec.evaluate(dataset) return [[0, ro], [1, ro], ...], we need the robustness of the last timestep only.
+        # minimize the means -
+        robs.append(-spec.evaluate(dataset)[-1][1])
+    return torch.tensor(robs, device=states.device)
     
 
 def test_random_shooting():
         # Check if CUDA is available
     if torch.cuda.is_available():
-        device = torch.device("cuda:1")
+        device = torch.device("cuda:0")
         print("CUDA is available. Training on GPU.")
     else:
         device = torch.device("cpu")
