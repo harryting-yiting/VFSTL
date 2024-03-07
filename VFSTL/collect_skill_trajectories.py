@@ -46,7 +46,7 @@ def from_real_dict_to_vector(dict_real):
         v = np.append(v, dict_real[key])
     return v
 
-def main(args):
+def main(args, surfix):
 
     device = torch.device(args.device)
     timeout = args.timeout
@@ -57,9 +57,10 @@ def main(args):
     # build dataset
     skipped_steps = args.skipped_steps
     random_goal = args.random_goal
-    surfix = args.surfix
 
-
+    save_path = "/app/vfstl/src/VFSTL/dynamic_models/datasets/zone_dynamic_{}_{}_{}_{}_{}".format(
+        skipped_steps, timeout, buffer_size, random_goal, surfix)
+    
     model = PPO.load(model_path, device=device)
     env = ZoneRandomGoalEnv(
         env=gym.make('Zones-8-v0', timeout=timeout), 
@@ -99,11 +100,9 @@ def main(args):
                             env.fix_goal(np.random.choice(env.goals))
                         pbar.update(1)
 
-    np.save("/app/vfstl/src/VFSTL/dynamic_models/datasets/zone_dynamic_{}_{}_{}_{}_{}".format(
-        skipped_steps, timeout, buffer_size, random_goal, surfix), vf_dynamic_dataset)
+    np.save(save_path, vf_dynamic_dataset)
     
-    return "/app/vfstl/src/VFSTL/dynamic_models/datasets/zone_dynamic_{}_{}_{}_{}_{}".format(
-        skipped_steps, timeout, buffer_size, random_goal, surfix)
+    return save_path
 
 if __name__ == '__main__':
 
@@ -112,7 +111,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--skipped_steps', type=int, default=100)
     parser.add_argument('--timeout', type=int, default=10000)
-    parser.add_argument('--buffer_size', type=int, default=12500) # 500,000 / 80 = 6250
+    parser.add_argument('--buffer_size', type=int, default=2000) #100,000/50 ,500,000 / 80 = 6250
     parser.add_argument('--random_goal', type=int, default=1)
     
 
@@ -120,7 +119,6 @@ if __name__ == '__main__':
     parser.add_argument('--model_path', type=str, default='/app/vfstl/src/GCRL-LTL/zones/models/goal-conditioned/best_model_ppo_8')
     parser.add_argument('--exp_name', type=str, default='traj_dataset')
     parser.add_argument('--execution_mode', type=str, default='primitives', choices=('primitives'))
-    parser.add_argument('--surfix', type=int, default=0)
     
     args = parser.parse_args()
 
@@ -129,11 +127,10 @@ if __name__ == '__main__':
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
-    max_thread = 50
+    max_thread = 60
     with concurrent.futures.ProcessPoolExecutor(max_workers=max_thread) as executor:
         futures = []
         for i in range(0, max_thread):
-            args.surfix = i
-            futures.append(executor.submit(main, args))
+            futures.append(executor.submit(main, args, i))
         results = [future.result() for future in concurrent.futures.as_completed(futures)]
         print(results)

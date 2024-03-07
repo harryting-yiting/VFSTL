@@ -27,13 +27,13 @@ class VFDynamicsMLP(nn.Module):
         # input : one_hot + all vfs
         # output: all vfs
         self.model = nn.Sequential(
-            nn.Linear(2*state_dim, 256),
+            nn.Linear(2*state_dim, 1024),
             nn.ReLU(),
-            nn.Linear(256, 256),
+            nn.Linear(1024, 1024),
             nn.ReLU(),
-            nn.Linear(256, 256),
+            nn.Linear(1024, 1024),
             nn.ReLU(),
-            nn.Linear(256, state_dim)
+            nn.Linear(1024, state_dim)
         )
 
     def forward(self, x):
@@ -99,8 +99,8 @@ class VFDynamicTrainer():
 
                 # Gather data and report
                 running_loss += loss.item()
-                if i % 1000 == 999:
-                    last_loss = running_loss / 1000 # loss per batch
+                if i % 10 == 9:
+                    last_loss = running_loss / 10 # loss per batch
                     print('  batch {} loss: {}'.format(i + 1, last_loss))
                     tb_x = epoch_index * len(self.train_loader) + i + 1
                     tb_writer.add_scalar('Loss/train', last_loss, tb_x)
@@ -194,69 +194,20 @@ class VFDynamics():
         return vf_prediction
 
 
-class RandomShootingOptimization():
 
-    def __init__(self, dynamics, cost_fn, constraints, timesteps) -> None:
-        self.dynamics = dynamics
-        self.cost_fn = cost_fn
-        self.constraints = constraints
-        self.timesteps = timesteps
+def combine_load_data(paths):
+    data = []
+    for path in paths:
+        data.append(np.load(path))
+    return np.concatenate(data)
 
-    def optimize(self, num_sample_batches, batch_size, multiprocessing, init_state, device):
-        # return the best sample and there costs
-        mini_control = torch.randint(0, self.dynamics.size_discrete_actions, (self.timesteps,), device=device)
-        mini_state = []
-        mini_cost = 1000000
-        for i in range(0, num_sample_batches):
-            # generate random action sequence with batch_size * timesteps
-            controls = torch.randint(0, self.dynamics.size_discrete_actions, (batch_size, self.timesteps), device=device) 
-            # run simulation
-            states = self.dynamics.forward_simulation(controls, init_state)
-            costs = self.cost_fn(states)
-            mini_index = torch.argmin(costs)
-             # get best control and cost
-            if costs[mini_index] < mini_cost:
-                mini_cost = costs[mini_index]
-                mini_control = controls[mini_index]
-                mini_state = states[mini_index]
-        
-        return mini_control, mini_state, mini_cost
-
-
-def test_random_shooting():
-        # Check if CUDA is available
-    if torch.cuda.is_available():
-        device = torch.device("cuda:1")
-        print("CUDA is available. Training on GPU.")
-    else:
-        device = torch.device("cpu")
-        print("CUDA is not available. Training on CPU.")
-
-    def cost_fn(state):
-        return torch.randn(state.size()[0])
-    model_path = '/app/vfstl/src/GCRL-LTL/zones/models/goal-conditioned/best_model_ppo_8'
-    model = PPO.load(model_path, device=device)
-    timeout = 10000
-    env = ZoneRandomGoalEnv(
-        env=gym.make('Zones-8-v0', timeout=timeout), 
-        primitives_path='/app/vfstl/src/GCRL-LTL/zones/models/primitives', 
-        goals_representation=get_zone_vector(),
-        use_primitves=True,
-        rewards=[0, 1],
-        device=device,
-    )
-
-    obs = env.reset()
-    init_values = torch.from_numpy(from_real_dict_to_vector(get_all_goal_value(obs, model.policy, get_zone_vector(), device))).to(device)
-
-    vf_num = 4
-    model = VFDynamicsMLP(vf_num)
-    model.load_state_dict(torch.load("/app/vfstl/src/VFSTL/dynamic_models/test_model_20240306_152632_3"))
-    dynamics = VFDynamics(model.to(device), 4)
-    op = RandomShootingOptimization(dynamics, cost_fn, cost_fn, 10)
-    print(op.optimize(1024, 1024, False, init_values, device))
-    
-
+def create_loading_paths(skipped_steps, timeout, buffer_size, random_goal, max_surfix):
+    paths = []
+    for i in range(0, max_surfix):
+        save_path = "/app/vfstl/src/VFSTL/dynamic_models/datasets/zone_dynamic_{}_{}_{}_{}_{}.npy".format(
+            skipped_steps, timeout, buffer_size, random_goal, i)
+        paths.append(save_path)
+    return paths
 
 def main():
     # Check if CUDA is available
@@ -267,21 +218,23 @@ def main():
         device = torch.device("cpu")
         print("CUDA is not available. Training on CPU.")
     
-    raw_data = np.load("/app/vfstl/src/VFSTL/dynamic_models/datasets/zone_dynamic_100_10000_20_1_0.npy")
+    data_paths = create_loading_paths(100, 10000, 2000, 1, 60)
+    raw_data = combine_load_data(data_paths)
     num_vf = 4
-    train_dataset_len = 8
+    vali_dataset_len = int(np.shape(raw_data)[0] * 0.2)
+    train_dataset_len = int(np.shape(raw_data)[0] - vali_dataset_len)
     vali_dataset_len = 5
     train_raw_data = raw_data[:train_dataset_len]
     vali_raw_data = raw_data[train_dataset_len: train_dataset_len+vali_dataset_len]
-    train_loader = torch.utils.data.DataLoader(VFDynamicDataset(train_raw_data, num_vf), batch_size=2, shuffle=True)
-    val_loader = torch.utils.data.DataLoader(VFDynamicDataset(vali_raw_data, num_vf), batch_size=2, shuffle=True)
+    train_loader = torch.utils.data.DataLoader(VFDynamicDataset(train_raw_data, num_vf), batch_size=1024, shuffle=True)
+    val_loader = torch.utils.data.DataLoader(VFDynamicDataset(vali_raw_data, num_vf), batch_size=1024, shuffle=True)
     
     
     dy_model = VFDynamicsMLP(num_vf)
-    trainer = VFDynamicTrainer(dy_model, train_loader, val_loader, 5, "test", device)
+    trainer = VFDynamicTrainer(dy_model, train_loader, val_loader, 1000, "test", device)
     trainer.train()
     
 if __name__ == "__main__":
-    #main()
-    test_random_shooting()
+    main()
+    #test_random_shooting()
     
