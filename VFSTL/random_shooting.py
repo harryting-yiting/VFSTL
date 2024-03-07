@@ -45,11 +45,12 @@ class RandomShootingOptimization():
 
 
 def stl_cost_fn(states):
-    spec = rtamt.StlDenseTimeSpecification()
+    spec = rtamt.StlDiscreteTimeSpecification()
     spec.declare_var('a0', 'float')
     spec.spec = 'eventually[0,10](a0 >= 0.8)'
     try:
         spec.parse()
+        spec.pastify()
     except rtamt.RTAMTException as err:
         print('RTAMT Exception: {}'.format(err))
         sys.exit()
@@ -57,7 +58,6 @@ def stl_cost_fn(states):
     rob = spec.evaluate(['a0', a0])
     return rob
     
-
 
 def test_random_shooting():
         # Check if CUDA is available
@@ -88,7 +88,7 @@ def test_random_shooting():
 
     vf_num = 4
     model = VFDynamicsMLP(vf_num)
-    model.load_state_dict(torch.load("/app/vfstl/src/VFSTL/dynamic_models/test_model_20240307_065600_57"))
+    model.load_state_dict(torch.load("/app/vfstl/src/VFSTL/dynamic_models/test_model_20240307_085639_11"))
     dynamics = VFDynamics(model.to(device), vf_num)
     op = RandomShootingOptimization(dynamics, stl_cost_fn, cost_fn, 10)
     print(op.optimize(1024, 1024, False, init_values, device))

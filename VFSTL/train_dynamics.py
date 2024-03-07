@@ -231,7 +231,7 @@ def main():
     
     
     dy_model = VFDynamicsMLP(num_vf)
-    trainer = VFDynamicTrainer(dy_model, train_loader, val_loader, 1000, "test", device)
+    trainer = VFDynamicTrainer(dy_model, train_loader, val_loader, 100, "test", device)
     trainer.train()
     
 if __name__ == "__main__":
