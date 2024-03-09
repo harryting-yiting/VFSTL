@@ -10,6 +10,7 @@ from collect_skill_trajectories import get_all_goal_value, from_real_dict_to_vec
 from stable_baselines3 import PPO
 from train_dynamics import VFDynamics, VFDynamicsMLP
 import rtamt
+import time
 sys.path.append("/app/vfstl/src/GCRL-LTL/zones")
 from envs import ZoneRandomGoalEnv
 from envs.utils import get_zone_vector
@@ -46,8 +47,12 @@ class RandomShootingOptimization():
 def stl_cost_fn(states):
     # state N* T * M
     spec = rtamt.StlDiscreteTimeOfflineSpecification()
-    spec.declare_var('a', 'float')
-    spec.spec = 'eventually[0,10](a >= 0.8)'
+    spec.declare_var('J0', 'float')
+    spec.declare_var('W0', 'float')
+    spec.declare_var('R0', 'float')
+    #spec.declare_var('Y', 'float')
+    # spec.spec = 'eventually[0,2](W0 >= 0.8 and eventually[0,3](J0 >= 0.8 and eventually[0,2](R0 >= 0.8)))'
+    spec.spec = 'eventually[0,10](J0 >= 0.8)'
     try:
         spec.parse()
         #spec.pastify()
@@ -55,12 +60,18 @@ def stl_cost_fn(states):
         print('RTAMT Exception: {}'.format(err))
         sys.exit()
 
-    a0 = states[:,:, 0]
+    J = states[:,:, 0]
+    W = states[:,:, 1]
+    R = states[:,:, 2]
+    a3 = states[:,:, 3]
+
     robs = []
     for batch in range(0,states.size()[0]):
         dataset = {
-        'time': [i for i in range(0, a0.size()[1])],
-        'a': a0[batch, :].tolist(),
+        'time': [i for i in range(0, J.size()[1])],
+        'J0': J[batch, :].tolist(),
+        'W0': W[batch, :].tolist(),
+        'R0': R[batch, :].tolist(),
         }
         # spec.evaluate(dataset) return [[0, ro], [1, ro], ...], we need the robustness of the last timestep only.
         # minimize the means -
@@ -81,7 +92,7 @@ def test_random_shooting():
         return torch.randn(state.size()[0])
     
     model_path = '/app/vfstl/src/GCRL-LTL/zones/models/goal-conditioned/best_model_ppo_8'
-    model = PPO.load(model_path, device=device)
+    policy_model = PPO.load(model_path, device=device)
     timeout = 10000
     env = ZoneRandomGoalEnv(
         env=gym.make('Zones-8-v0', timeout=timeout), 
@@ -93,16 +104,35 @@ def test_random_shooting():
     )
 
     obs = env.reset()
-    init_values = torch.from_numpy(from_real_dict_to_vector(get_all_goal_value(obs, model.policy, get_zone_vector(), device))).to(device)
+    init_values = torch.from_numpy(from_real_dict_to_vector(get_all_goal_value(obs, policy_model.policy, get_zone_vector(), device))).to(device)
 
     vf_num = 4
+    T_horizon = 10
+    skill_timesteps = 100
     model = VFDynamicsMLP(vf_num)
     model.load_state_dict(torch.load("/app/vfstl/src/VFSTL/dynamic_models/test_model_20240307_085639_11"))
     dynamics = VFDynamics(model.to(device), vf_num)
-    op = RandomShootingOptimization(dynamics, stl_cost_fn, cost_fn, 10)
-    print(op.optimize(1024, 1024, False, init_values, device))
+    op = RandomShootingOptimization(dynamics, stl_cost_fn, cost_fn, T_horizon)
+   
+    controls, states, cost = op.optimize(102, 4096, False, init_values, device)
+    print(controls)
+    print(states)
+    print(cost)
 
-
+    env.render()
+    for i in range(0, T_horizon):
+        frame = env.fix_goal(env.goals[controls[i]])
+        print(np.shape(frame))
+        for j in range(0, skill_timesteps):
+            action, _ = policy_model.predict(env.current_observation(), deterministic=True)
+            obs, reward, eval_done, info = env.step(action)
+            env.render()
+            time.sleep(0.0001)
+        real_value = torch.from_numpy(from_real_dict_to_vector(get_all_goal_value(obs, policy_model.policy, get_zone_vector(), device))).to(device)
+        print('------------real value--------------')
+        print(real_value)
+        print('------------predict value--------------')
+        print(states[i])
 if __name__ == "__main__":
     test_random_shooting()
     
