@@ -50,9 +50,9 @@ def stl_cost_fn(states):
     spec.declare_var('J0', 'float')
     spec.declare_var('W0', 'float')
     spec.declare_var('R0', 'float')
-    #spec.declare_var('Y', 'float')
-    # spec.spec = 'eventually[0,2](W0 >= 0.8 and eventually[0,3](J0 >= 0.8 and eventually[0,2](R0 >= 0.8)))'
-    spec.spec = 'eventually[0,10](J0 >= 0.8)'
+    spec.declare_var('Y0', 'float')
+    spec.spec = 'eventually[0,3]((Y0 >= 0.8) and eventually[0,3](W0 >= 0.8))'
+    #spec.spec = 'eventually[0,10](W0 >= 0.8)'
     try:
         spec.parse()
         #spec.pastify()
@@ -63,20 +63,29 @@ def stl_cost_fn(states):
     J = states[:,:, 0]
     W = states[:,:, 1]
     R = states[:,:, 2]
-    a3 = states[:,:, 3]
+    Y = states[:,:, 3]
 
-    robs = []
-    for batch in range(0,states.size()[0]):
-        dataset = {
-        'time': [i for i in range(0, J.size()[1])],
-        'J0': J[batch, :].tolist(),
-        'W0': W[batch, :].tolist(),
-        'R0': R[batch, :].tolist(),
-        }
-        # spec.evaluate(dataset) return [[0, ro], [1, ro], ...], we need the robustness of the last timestep only.
-        # minimize the means -
-        robs.append(-spec.evaluate(dataset)[-1][1])
-    return torch.tensor(robs, device=states.device)
+    dataset = {
+    'time': torch.tensor([i for i in range(0, J.size()[1])]).repeat((states.size()[0], 1)).T,
+    'J0': J.T,
+    'W0': W.T,
+    'R0': R.T,
+    'Y0': Y.T,
+    }
+    # spec.evaluate(dataset) return [[0, ro], [1, ro], ...], we need the robustness of the last timestep only.
+    # minimize the means -
+    m = spec.evaluate(dataset)
+    m = torch.vstack(m)
+    # m: T*N
+    end_tiem_step = 3
+    m = m[:3+1, :]
+
+    
+
+    #print(m)
+    robs = torch.max(m, 0).values
+    #robs = m[-1][1] * -1
+    return robs * -1
     
 
 def test_random_shooting():
@@ -114,7 +123,7 @@ def test_random_shooting():
     dynamics = VFDynamics(model.to(device), vf_num)
     op = RandomShootingOptimization(dynamics, stl_cost_fn, cost_fn, T_horizon)
    
-    controls, states, cost = op.optimize(102, 4096, False, init_values, device)
+    controls, states, cost = op.optimize(1024, 2048, False, init_values, device)
     print(controls)
     print(states)
     print(cost)
