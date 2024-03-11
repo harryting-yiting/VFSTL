@@ -126,7 +126,7 @@ def test_random_shooting():
     dynamics = VFDynamics(model.to(device), vf_num)
     op = RandomShootingOptimization(dynamics, stl_cost_fn, cost_fn, T_horizon)
    
-    controls, states, cost = op.optimize(1, 2048, False, init_values, device)
+    controls, states, cost = op.optimize(1, 20480, False, init_values, device)
     print(controls)
     print(states)
     print(cost)
