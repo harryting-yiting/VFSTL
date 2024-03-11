@@ -11,6 +11,8 @@ from stable_baselines3 import PPO
 from train_dynamics import VFDynamics, VFDynamicsMLP
 import rtamt
 import time
+#from gym.wrappers import RecordVideo
+from gym.wrappers.monitor import video_recorder as VR
 sys.path.append("/app/vfstl/src/GCRL-LTL/zones")
 from envs import ZoneRandomGoalEnv
 from envs.utils import get_zone_vector
@@ -51,7 +53,8 @@ def stl_cost_fn(states):
     spec.declare_var('W0', 'float')
     spec.declare_var('R0', 'float')
     spec.declare_var('Y0', 'float')
-    spec.spec = 'eventually[0,3]((Y0 >= 0.8) and eventually[0,3](W0 >= 0.8))'
+    #spec.spec = 'eventually[0,2]((J0 >= 0.8) and eventually[0,2](W0 >= 0.8))'
+    spec.spec = 'not ((J0 > 0.8) or (R0 > 0.8) or (Y0 > 0.8)) until[0, 3] ((W0 > 0.8) and ((not ((J0 > 0.8) or (R0 > 0.8) or (W0 > 0.8))) until[0, 3] (Y0 > 0.8)))'
     #spec.spec = 'eventually[0,10](W0 >= 0.8)'
     try:
         spec.parse()
@@ -78,12 +81,11 @@ def stl_cost_fn(states):
     m = torch.vstack(m)
     # m: T*N
     end_tiem_step = 3
-    m = m[:3+1, :]
-
-    
+    #m = m[:3+1, :]
 
     #print(m)
-    robs = torch.max(m, 0).values
+    robs = m[0,:]
+    #robs = torch.max(m, 0).values
     #robs = m[-1][1] * -1
     return robs * -1
     
@@ -111,7 +113,8 @@ def test_random_shooting():
         rewards=[0, 1],
         device=device,
     )
-
+    env.metadata['render.modes'] = ['rgb_array']
+    video_rec = VR.VideoRecorder(env, path = "./test_not((J0 > 0.8) or (R0 > 0.8) or (Y0 > 0.8)) until[0, 3] ((W0 > 0.8) and ((not ((J0 > 0.8) or (R0 > 0.8) or (W0 > 0.8))) until[0, 3] (Y0 > 0.8))).mp4")
     obs = env.reset()
     init_values = torch.from_numpy(from_real_dict_to_vector(get_all_goal_value(obs, policy_model.policy, get_zone_vector(), device))).to(device)
 
@@ -123,25 +126,26 @@ def test_random_shooting():
     dynamics = VFDynamics(model.to(device), vf_num)
     op = RandomShootingOptimization(dynamics, stl_cost_fn, cost_fn, T_horizon)
    
-    controls, states, cost = op.optimize(1024, 2048, False, init_values, device)
+    controls, states, cost = op.optimize(1, 20480, False, init_values, device)
     print(controls)
     print(states)
     print(cost)
 
-    env.render()
     for i in range(0, T_horizon):
         frame = env.fix_goal(env.goals[controls[i]])
         print(np.shape(frame))
         for j in range(0, skill_timesteps):
             action, _ = policy_model.predict(env.current_observation(), deterministic=True)
             obs, reward, eval_done, info = env.step(action)
-            env.render()
-            time.sleep(0.0001)
+            video_rec.capture_frame()
         real_value = torch.from_numpy(from_real_dict_to_vector(get_all_goal_value(obs, policy_model.policy, get_zone_vector(), device))).to(device)
         print('------------real value--------------')
         print(real_value)
         print('------------predict value--------------')
         print(states[i])
+    video_rec.close()
+    env.close()
+    
 if __name__ == "__main__":
     test_random_shooting()
     
