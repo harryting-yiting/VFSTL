@@ -10,11 +10,13 @@ from stable_baselines3 import PPO
 from collections import defaultdict
 import gym
 import sys
+import matplotlib.pyplot as plt
 
 # sys.path.append("/home/leo/Desktop/VFSTL/GCRL-LTL/zones/")
 sys.path.append("/app/vfstl/src/GCRL-LTL/zones")
 from envs import ZoneRandomGoalEnv
 from envs.utils import get_zone_vector
+from gym.wrappers.monitor import video_recorder as VR
 from collect_skill_trajectories import get_all_goal_value, from_real_dict_to_vector
 from train_dynamics import VFDynamicsMLP
 
@@ -23,15 +25,16 @@ def stl_cost(states):
     states_tensor = torch.zeros([len(states), states[0].size()[0]])         # T x vfs_dim
     for i in range(len(states)):
         states_tensor[i, :] = states[i]
-
     
     spec = rtamt.StlDiscreteTimeOfflineSpecification()
     spec.declare_var('J0', 'float')
     spec.declare_var('W0', 'float')
     spec.declare_var('R0', 'float')
     spec.declare_var('Y0', 'float')
-    # spec.spec = 'eventually[0,3]((Y0 >= 0.8) and eventually[0,3](W0 >= 0.8))'
-    spec.spec = 'eventually[0,10](W0 >= 0.8)'
+    # spec.spec = 'eventually[0,5]((W0 >= 0.8) and eventually[5,10](R0 >= 0.8))'
+    # spec.spec = 'eventually[0,10](W0 >= 0.8)'
+    spec.spec = 'eventually[0,2]((J0 >= 0.8) and eventually[0,2](W0 >= 0.8))'
+ 
 
     time = torch.arange(0, states_tensor.size()[0])
     J = states_tensor[:, 0]
@@ -230,6 +233,38 @@ def best_action_sequence(root):
 
     return action_sequence, states_sequence
 
+def plot_traj_2d(env, traj):
+    fig, ax = plt.subplots(figsize=(12, 12))
+
+    ax.set_xlim(xmin=-2.5, xmax=2.5)
+    ax.set_ylim(ymin=-2.5, ymax=2.5)
+    # plot circle ranges
+    circle_color = env.env.zones
+    circle_pos = env.env.zones_pos
+    circles = []
+    for i in range(len(circle_color)):
+        if circle_color[i].name == 'JetBlack':
+            circles.append(plt.Circle((circle_pos[i][0], circle_pos[i][1]), 0.25, color='black'))
+        elif circle_color[i].name == 'Red':
+            circles.append(plt.Circle((circle_pos[i][0], circle_pos[i][1]), 0.25, color='red'))
+        elif circle_color[i].name == 'White':
+            circles.append(plt.Circle((circle_pos[i][0], circle_pos[i][1]), 0.25, color='darkgrey'))
+        elif circle_color[i].name == 'Yellow':
+            circles.append(plt.Circle((circle_pos[i][0], circle_pos[i][1]), 0.25, color='gold'))
+    for circle in circles:
+        ax.add_patch(circle)
+
+    # plot agent position
+    traj = np.delete(traj, range(1, traj.shape[0], 10), axis=0)
+    x, y = traj.T
+    ax.plot(x, y, linestyle='dashed', marker='x', color='limegreen', linewidth=3)
+
+    ax.grid(True)
+    # ax.scatter(x, y)
+
+    fig.savefig('plot_traj.png')     
+    
+
 if __name__ == '__main__':
     device = torch.device("cpu")
 
@@ -247,6 +282,11 @@ if __name__ == '__main__':
         rewards=[0, 1],
     )
 
+    # set up video
+    env.metadata['render.modes'] = ['rgb_array']
+    video_rec = VR.VideoRecorder(env, path = "./result.mp4")
+    
+
     # upper level policy
     vf_num = 4
     max_step = 10
@@ -261,26 +301,32 @@ if __name__ == '__main__':
     root.build_tree(50000)
     controls, states = best_action_sequence(root)
 
-    print(controls)
-    print(states)
+    # print(controls)
+    # print(states)
 
     # plot
-    # T_horizon = 10
-    # skill_timesteps = 100
-    # env.render()
-    # for i in range(0, T_horizon):
-    #     frame = env.fix_goal(env.goals[controls[i]])
-    #     print(np.shape(frame))
-    #     for j in range(0, skill_timesteps):
-    #         action, _ = policy_model.predict(env.current_observation(), deterministic=True)
-    #         obs, reward, eval_done, info = env.step(action)
-    #         env.render()
-    #         time.sleep(0.0001)
-    #     real_value = torch.from_numpy(from_real_dict_to_vector(get_all_goal_value(obs, policy_model.policy, get_zone_vector(), device))).to(device)
-    #     print('------------real value--------------')
-    #     print(real_value)
+    T_horizon = 10
+    skill_timesteps = 100
+    traj = env.env.robot_pos[0:2]
 
+    # controls = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
 
+    for i in range(0, T_horizon):
+        frame = env.fix_goal(env.goals[controls[i]])
+        print(np.shape(frame))
+        for j in range(0, skill_timesteps):
+            action, _ = policy_model.predict(env.current_observation(), deterministic=True)
+            obs, reward, eval_done, info = env.step(action)
+            traj = np.vstack((traj, env.env.robot_pos[0:2]))
+            video_rec.capture_frame()
+            time.sleep(0.0001)
+        real_value = torch.from_numpy(from_real_dict_to_vector(get_all_goal_value(obs, policy_model.policy, get_zone_vector(), device))).to(device)
+        print('------------real value--------------')
+        print(real_value)
+
+    video_rec.close()
+    plot_traj_2d(env, traj)
+    env.close()
 
 
 
