@@ -6,13 +6,14 @@ import gym
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data.dataset import Dataset
 import sys
-from collect_skill_trajectories import get_all_goal_value, from_real_dict_to_vector
+from collect_skill_trajectories import get_all_goal_value, from_real_dict_to_vector, ZONE_OBS_DIM
 from stable_baselines3 import PPO
 from train_dynamics import VFDynamics, VFDynamicsMLP
 import rtamt
 import time
 #from gym.wrappers import RecordVideo
 from gym.wrappers.monitor import video_recorder as VR
+import math
 sys.path.append("/app/vfstl/src/GCRL-LTL/zones")
 from envs import ZoneRandomGoalEnv
 from envs.utils import get_zone_vector
@@ -46,49 +47,49 @@ class RandomShootingOptimization():
         
         return mini_control, mini_state, mini_cost
 
-def stl_cost_fn(states):
-    # state N* T * M
-    spec = rtamt.StlDiscreteTimeOfflineSpecification()
-    spec.declare_var('J0', 'float')
-    spec.declare_var('W0', 'float')
-    spec.declare_var('R0', 'float')
-    spec.declare_var('Y0', 'float')
-    #spec.spec = 'eventually[0,2]((J0 >= 0.8) and eventually[0,2](W0 >= 0.8))'
-    spec.spec = 'not ((J0 > 0.8) or (R0 > 0.8) or (Y0 > 0.8)) until[0, 3] ((W0 > 0.8) and ((not ((J0 > 0.8) or (R0 > 0.8) or (W0 > 0.8))) until[0, 3] (Y0 > 0.8)))'
-    #spec.spec = 'eventually[0,10](W0 >= 0.8)'
-    try:
-        spec.parse()
-        #spec.pastify()
-    except rtamt.RTAMTException as err:
-        print('RTAMT Exception: {}'.format(err))
-        sys.exit()
 
-    J = states[:,:, 0]
-    W = states[:,:, 1]
-    R = states[:,:, 2]
-    Y = states[:,:, 3]
-
-    dataset = {
-    'time': torch.tensor([i for i in range(0, J.size()[1])]).repeat((states.size()[0], 1)).T,
-    'J0': J.T,
-    'W0': W.T,
-    'R0': R.T,
-    'Y0': Y.T,
-    }
-    # spec.evaluate(dataset) return [[0, ro], [1, ro], ...], we need the robustness of the last timestep only.
-    # minimize the means -
-    m = spec.evaluate(dataset)
-    m = torch.vstack(m)
-    # m: T*N
-    end_tiem_step = 3
-    #m = m[:3+1, :]
-
-    #print(m)
-    robs = m[0,:]
-    #robs = torch.max(m, 0).values
-    #robs = m[-1][1] * -1
-    return robs * -1
+def get_stl_cost_function(stl_spec: str):
     
+    def stl_cost_fn(states):
+        # state N* T * M
+        spec = rtamt.StlDiscreteTimeOfflineSpecification()
+        spec.declare_var('J0', 'float')
+        spec.declare_var('W0', 'float')
+        spec.declare_var('R0', 'float')
+        spec.declare_var('Y0', 'float')
+        #spec.spec = 'eventually[0,2]((J0 >= 0.8) and eventually[0,2](W0 >= 0.8))'
+        #spec.spec = 'not ((J0 > 0.8) or (R0 > 0.8) or (Y0 > 0.8)) until[0, 3] ((W0 > 0.8) and ((not ((J0 > 0.8) or (R0 > 0.8) or (W0 > 0.8))) until[0, 3] (Y0 > 0.8)))'
+        #spec.spec = 'eventually[0,10](W0 >= 0.8)'
+        spec.spec = stl_spec
+        try:
+            spec.parse()
+            #spec.pastify()
+        except rtamt.RTAMTException as err:
+            print('RTAMT Exception: {}'.format(err))
+            sys.exit()
+
+        J = states[:,:, 0]
+        W = states[:,:, 1]
+        R = states[:,:, 2]
+        Y = states[:,:, 3]
+
+        dataset = {
+        'time': torch.tensor([i for i in range(0, J.size()[1])]).repeat((states.size()[0], 1)).T,
+        'J0': J.T,
+        'W0': W.T,
+        'R0': R.T,
+        'Y0': Y.T,
+        }
+        m = spec.evaluate(dataset)
+        m = torch.vstack(m)
+        robs = m[0,:]
+        return robs * -1
+    
+    return stl_cost_fn
+    
+
+#def MPC(env, policy, time)
+
 
 def test_random_shooting():
         # Check if CUDA is available
@@ -113,20 +114,25 @@ def test_random_shooting():
         rewards=[0, 1],
         device=device,
     )
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     env.metadata['render.modes'] = ['rgb_array']
-    video_rec = VR.VideoRecorder(env, path = "./test_not((J0 > 0.8) or (R0 > 0.8) or (Y0 > 0.8)) until[0, 3] ((W0 > 0.8) and ((not ((J0 > 0.8) or (R0 > 0.8) or (W0 > 0.8))) until[0, 3] (Y0 > 0.8))).mp4")
+    
+    stl_spec = 'not ((J0 > 0.8) or (R0 > 0.8) or (Y0 > 0.8)) until[0, 3] ((W0 > 0.8) and ((not ((J0 > 0.8) or (R0 > 0.8) or (W0 > 0.8))) until[0, 3] (Y0 > 0.8)))'
+    video_rec = VR.VideoRecorder(env, path = "./test_{}_{}.mp4".format(stl_spec, timestamp))
+    
     obs = env.reset()
     init_values = torch.from_numpy(from_real_dict_to_vector(get_all_goal_value(obs, policy_model.policy, get_zone_vector(), device))).to(device)
 
     vf_num = 4
     T_horizon = 10
     skill_timesteps = 100
+    
     model = VFDynamicsMLP(vf_num)
     model.load_state_dict(torch.load("/app/vfstl/src/VFSTL/dynamic_models/test_model_20240307_085639_11"))
     dynamics = VFDynamics(model.to(device), vf_num)
-    op = RandomShootingOptimization(dynamics, stl_cost_fn, cost_fn, T_horizon)
+    op = RandomShootingOptimization(dynamics, get_stl_cost_function(stl_spec), cost_fn, T_horizon)
    
-    controls, states, cost = op.optimize(1, 20480, False, init_values, device)
+    controls, states, cost = op.optimize(5, 65536, False, init_values, device)
     print(controls)
     print(states)
     print(cost)
@@ -145,7 +151,127 @@ def test_random_shooting():
         print(states[i])
     video_rec.close()
     env.close()
+
+
+def trivial_fn(state):
+    return torch.randn(state.size()[0])
     
+    
+class RandomShootingController():
+    def __init__(self, timesteps_pre_policy: int,  nnPolicy: torch.nn.Module, dynamics, goals ,horizon: int, batch_size: int, epoch: int, device ):
+        # timesteps_pre_action: the numer of env timesteps needed per action in the controller 
+        # NNPolicy: goal_one_hot + obs -> action (one env step) or values
+        self.timesteps_pre_policy = timesteps_pre_policy
+        self.NNPolicy = nnPolicy
+        self.batch_size = batch_size
+        self.epoch = epoch
+        self.horizon = horizon
+        self.zone_vector = get_zone_vector()
+        self.device = device
+        self.dynamics = dynamics
+        self.goals = goals
+        
+        
+        # updated
+        self.op = None # updated by setTarget
+        self.current_timestep = 0
+        self.current_controls_plans = []
+        self.prev_n_in_horizon = 0
+        return
+        
+    def setTarget(self, stl:str):
+        self.op = RandomShootingOptimization(self.dynamics, get_stl_cost_function(stl), trivial_fn, self.horizon)
+        return
+    
+    def predict(self, obs):
+        
+        done = False
+        
+        if self.current_timestep == 0:
+            init_values = torch.from_numpy(from_real_dict_to_vector(get_all_goal_value(obs, self.NNPolicy.policy, get_zone_vector(), self.device))).to(self.device)
+            controls, states, cost = self.op.optimize(self.epoch, self.batch_size, False, init_values, self.device)
+            self.current_controls_plans = controls
+            print(controls)
+            print(states)
+            print(cost)
+        
+        new_n_horizon = math.floor(self.current_timestep / self.timesteps_pre_policy)
+        current_goal_index = self.current_controls_plans[new_n_horizon]
+        obs = np.concatenate((obs[:-ZONE_OBS_DIM], self.zone_vector[self.goals[current_goal_index]]))
+        action, _ = self.NNPolicy.predict(obs, deterministic=True)
+        
+        if(self.prev_n_in_horizon != new_n_horizon or self.current_timestep == 0):
+            print(torch.from_numpy(from_real_dict_to_vector(get_all_goal_value(obs, self.NNPolicy.policy, get_zone_vector(), self.device))).to(self.device))
+            print(current_goal_index)
+        # update class data
+        self.current_timestep += 1
+        self.prev_n_in_horizon = new_n_horizon
+        
+        if self.current_timestep > self.horizon * self.timesteps_pre_policy - 1:
+            done = True
+            self.reset()
+            
+        return action, done
+    
+    def reset(self):
+        self.op = None # updated by setTarget
+        self.current_timestep = 0
+        self.current_controls_plans = []
+        self.prev_n_in_horizon = 0
+    
+
+def test_random_shooting_controller(stl_spec:str):
+        # Check if CUDA is available
+    if torch.cuda.is_available():
+        device = torch.device("cuda:0")
+        print("CUDA is available. Training on GPU.")
+    else:
+        device = torch.device("cpu")
+        print("CUDA is not available. Training on CPU.")
+
+    def cost_fn(state):
+        return torch.randn(state.size()[0])
+    
+    model_path = '/app/vfstl/src/GCRL-LTL/zones/models/goal-conditioned/best_model_ppo_8'
+    policy_model = PPO.load(model_path, device=device)
+    timeout = 10000
+    env = ZoneRandomGoalEnv(
+        env=gym.make('Zones-8-v0', timeout=timeout), 
+        primitives_path='/app/vfstl/src/GCRL-LTL/zones/models/primitives', 
+        goals_representation=get_zone_vector(),
+        use_primitves=True,
+        rewards=[0, 1],
+        device=device,
+    )
+    
+    vf_num = 4
+    T_horizon = 10
+    skill_timesteps = 100
+    
+    model = VFDynamicsMLP(vf_num)
+    model.load_state_dict(torch.load("/app/vfstl/src/VFSTL/dynamic_models/test_model_20240307_085639_11"))
+    dynamics = VFDynamics(model.to(device), vf_num)
+    
+    
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    env.metadata['render.modes'] = ['rgb_array']
+    video_rec = VR.VideoRecorder(env, path = "./test_{}_{}.mp4".format(stl_spec, timestamp))
+    controller = RandomShootingController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 65536, 100, device)
+    controller.setTarget(stl_spec)
+    obs = env.reset()
+    done = False
+    while not done:
+        action, controller_done = controller.predict(obs)
+        obs, reward, eval_done, info = env.step(action)
+        done = controller_done
+        video_rec.capture_frame()
+    video_rec.close()
+    env.close()
+    
+
 if __name__ == "__main__":
-    test_random_shooting()
+    #stl_spec = 'not ((J0 > 0.8) or (R0 > 0.8) or (Y0 > 0.8)) until[0, 3] ((W0 > 0.8) and ((not ((J0 > 0.8) or (R0 > 0.8) or (W0 > 0.8))) until[0, 3] (Y0 > 0.8)))'
+    stl_spec =  'eventually[0,4](R0 >= 0.8 and eventually[0,5] (Y0 >= 0.8))'
+    test_random_shooting_controller(stl_spec=stl_spec)
+    #test_random_shooting()
     
