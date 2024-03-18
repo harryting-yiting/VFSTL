@@ -21,23 +21,29 @@ from rl.traj_buffer import TrajectoryBufferDataset
 
 class RandomShootingOptimization():
 
-    def __init__(self, dynamics, cost_fn, constraints, timesteps) -> None:
+    def __init__(self, dynamics, cost_fn, constraints, timesteps, device) -> None:
         self.dynamics = dynamics
         self.cost_fn = cost_fn
         self.constraints = constraints
         self.timesteps = timesteps
+        self.mini_control = torch.randint(0, self.dynamics.size_discrete_actions, (self.timesteps,), device=device)
 
-    def optimize(self, num_sample_batches, batch_size, multiprocessing, init_state, device):
+    def optimize(self, num_sample_batches, batch_size, multiprocessing, init_state, device, pre_states = None):
         # return the best sample and there costs
-        mini_control = torch.randint(0, self.dynamics.size_discrete_actions, (self.timesteps,), device=device)
+        self.mini_control = torch.randint(0, self.dynamics.size_discrete_actions, (self.timesteps,), device=device)
         mini_state = []
         mini_cost = 1000000
         for i in range(0, num_sample_batches):
             # generate random action sequence with batch_size * timesteps
             controls = torch.randint(0, self.dynamics.size_discrete_actions, (batch_size, self.timesteps), device=device) 
             # run simulation
+            # states dimsion: N * (T + 1) * M
+            # pre_states: t*M
             states = self.dynamics.forward_simulation(controls, init_state)
-            costs = self.cost_fn(states)
+            states_add_init = torch.cat((init_state.repeat(batch_size, 1, 1 ), states), dim=1)
+            if pre_states != None:
+                 states_add_init = torch.cat((pre_states.repeat(batch_size, 1, 1 ), states_add_init), dim=1)
+            costs = self.cost_fn(states_add_init)
             mini_index = torch.argmin(costs)
              # get best control and cost
             if costs[mini_index] < mini_cost:
@@ -51,7 +57,7 @@ class RandomShootingOptimization():
 def get_stl_cost_function(stl_spec: str):
     
     def stl_cost_fn(states):
-        # state N* T * M
+        # state N* T+1(the one is the initail state) * M
         spec = rtamt.StlDiscreteTimeOfflineSpecification()
         spec.declare_var('J0', 'float')
         spec.declare_var('W0', 'float')
@@ -74,7 +80,7 @@ def get_stl_cost_function(stl_spec: str):
         Y = states[:,:, 3]
 
         dataset = {
-        'time': torch.tensor([i for i in range(0, J.size()[1])]).repeat((states.size()[0], 1)).T,
+        'time': torch.tensor([i for i in range(0, J.size()[1])]).repeat((states.size()[0], 1)).T.to(device=states.device),
         'J0': J.T,
         'W0': W.T,
         'R0': R.T,
@@ -130,7 +136,7 @@ def test_random_shooting():
     model = VFDynamicsMLP(vf_num)
     model.load_state_dict(torch.load("/app/vfstl/src/VFSTL/dynamic_models/test_model_20240307_085639_11"))
     dynamics = VFDynamics(model.to(device), vf_num)
-    op = RandomShootingOptimization(dynamics, get_stl_cost_function(stl_spec), cost_fn, T_horizon)
+    op = RandomShootingOptimization(dynamics, get_stl_cost_function(stl_spec), cost_fn, T_horizon, device)
    
     controls, states, cost = op.optimize(5, 65536, False, init_values, device)
     print(controls)
@@ -177,10 +183,11 @@ class RandomShootingController():
         self.current_timestep = 0
         self.current_controls_plans = []
         self.prev_n_in_horizon = 0
+        
         return
         
     def setTarget(self, stl:str):
-        self.op = RandomShootingOptimization(self.dynamics, get_stl_cost_function(stl), trivial_fn, self.horizon)
+        self.op = RandomShootingOptimization(self.dynamics, get_stl_cost_function(stl), trivial_fn, self.horizon, self.device)
         return
     
     def predict(self, obs):
@@ -192,7 +199,9 @@ class RandomShootingController():
             controls, states, cost = self.op.optimize(self.epoch, self.batch_size, False, init_values, self.device)
             self.current_controls_plans = controls
             print(controls)
-            print(states)
+            # print(init_values)
+            # print(states)
+            print("cost")
             print(cost)
         
         new_n_horizon = math.floor(self.current_timestep / self.timesteps_pre_policy)
@@ -200,9 +209,9 @@ class RandomShootingController():
         obs = np.concatenate((obs[:-ZONE_OBS_DIM], self.zone_vector[self.goals[current_goal_index]]))
         action, _ = self.NNPolicy.predict(obs, deterministic=True)
         
-        if(self.prev_n_in_horizon != new_n_horizon or self.current_timestep == 0):
-            print(torch.from_numpy(from_real_dict_to_vector(get_all_goal_value(obs, self.NNPolicy.policy, get_zone_vector(), self.device))).to(self.device))
-            print(current_goal_index)
+        # if(self.prev_n_in_horizon != new_n_horizon or self.current_timestep == 0):
+        #     print(torch.from_numpy(from_real_dict_to_vector(get_all_goal_value(obs, self.NNPolicy.policy, get_zone_vector(), self.device))).to(self.device))
+        #     print(current_goal_index)
         # update class data
         self.current_timestep += 1
         self.prev_n_in_horizon = new_n_horizon
@@ -211,14 +220,90 @@ class RandomShootingController():
             done = True
             self.reset()
             
-        return action, done
+        return action, done, current_goal_index
     
     def reset(self):
         self.op = None # updated by setTarget
         self.current_timestep = 0
         self.current_controls_plans = []
         self.prev_n_in_horizon = 0
+
+
+class MPController():
+    def __init__(self, timesteps_pre_policy: int,  nnPolicy: torch.nn.Module, dynamics, goals ,horizon: int, batch_size: int, epoch: int, device ):
+        # timesteps_pre_action: the numer of env timesteps needed per action in the controller 
+        # NNPolicy: goal_one_hot + obs -> action (one env step) or values
+        self.timesteps_pre_policy = timesteps_pre_policy
+        self.NNPolicy = nnPolicy
+        self.batch_size = batch_size
+        self.epoch = epoch
+        self.horizon = horizon
+        self.zone_vector = get_zone_vector()
+        self.device = device
+        self.dynamics = dynamics
+        self.goals = goals
+        
+        # updated
+        self.op = None # updated by setTarget
+        self.current_timestep = 0
+        self.current_controls_plans = []
+        self.prev_n_in_horizon = 0
+        self.pre_values = []
+        return
     
+    def setTarget(self, stl:str):
+        self.op = RandomShootingOptimization(self.dynamics, get_stl_cost_function(stl), trivial_fn, self.horizon, self.device)
+        return
+    
+    def predict(self, obs):
+        
+        done = False
+        # MPC
+        # for each big time step, re-optimize control sequnece
+        
+        if self.current_timestep == 0:
+            init_values = torch.from_numpy(from_real_dict_to_vector(get_all_goal_value(obs, self.NNPolicy.policy, get_zone_vector(), self.device))).to(self.device)
+            controls, states, cost = self.op.optimize(self.epoch, self.batch_size, False, init_values, self.device)
+            self.pre_values.append(init_values)
+            self.current_controls_plans = controls
+            # print(controls)
+            # # print(init_values)
+            # # print(states)
+            # print("cost")
+            # print(cost)
+        
+        new_n_horizon = math.floor(self.current_timestep / self.timesteps_pre_policy)
+        if(self.prev_n_in_horizon != new_n_horizon):
+            self.op.timesteps -= 1
+            init_values = torch.from_numpy(from_real_dict_to_vector(get_all_goal_value(obs, self.NNPolicy.policy, get_zone_vector(), self.device))).to(self.device)
+            controls, states, cost = self.op.optimize(self.epoch, self.batch_size, False, init_values, self.device, torch.stack(self.pre_values).to(self.device))
+            # print(controls)
+            # print(new_n_horizon)
+            self.current_controls_plans = controls
+            self.pre_values.append(init_values)
+            # print(torch.from_numpy(from_real_dict_to_vector(get_all_goal_value(obs, self.NNPolicy.policy, get_zone_vector(), self.device))).to(self.device))
+            # print(current_goal_index)
+        
+        current_goal_index = self.current_controls_plans[0]
+        obs = np.concatenate((obs[:-ZONE_OBS_DIM], self.zone_vector[self.goals[current_goal_index]]))
+        action, _ = self.NNPolicy.predict(obs, deterministic=True)
+        
+
+        self.current_timestep += 1
+        self.prev_n_in_horizon = new_n_horizon
+        
+        if self.current_timestep > self.horizon * self.timesteps_pre_policy - 1:
+            done = True
+            self.reset()
+            
+        return action, done, current_goal_index
+    
+    def reset(self):
+        self.op = None # updated by setTarget
+        self.current_timestep = 0
+        self.current_controls_plans = []
+        self.prev_n_in_horizon = 0
+        self.pre_values = []
 
 def test_random_shooting_controller(stl_spec:str):
         # Check if CUDA is available
