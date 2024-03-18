@@ -184,7 +184,7 @@ class VFDynamics():
         # s_t+1 = NN(st)
         
         prev_vfs = init_vfs.repeat((batch_num, 1))
-        vf_prediction = torch.zeros((batch_num, timesteps, init_vfs.size()[0]))
+        vf_prediction = torch.zeros((batch_num, timesteps, init_vfs.size()[0]), device=prev_vfs.device)
         
         for i in range(0, timesteps):
             vfs = self.one_step_simulation(control_seqs[:, i], prev_vfs)

@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 import torch.nn as nn
-from datetime import datetime
+from tqdm import tqdm, trange
 import gym
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data.dataset import Dataset
@@ -11,15 +11,68 @@ from stable_baselines3 import PPO
 from train_dynamics import VFDynamics, VFDynamicsMLP
 import rtamt
 import time
-#from gym.wrappers import RecordVideo
-from gym.wrappers.monitor import video_recorder as VR
-from random_shooting import RandomShootingController
+from random_shooting import RandomShootingController, MPController
 sys.path.append("/app/vfstl/src/GCRL-LTL/zones")
 from envs import ZoneRandomGoalEnv
 from envs.utils import get_zone_vector
 from rl.traj_buffer import TrajectoryBufferDataset
 from envs.safety.zones_env import zone
+import matplotlib.pyplot as plt
+from datetime import datetime
+import random
+import copy
 
+
+class TaskSampler:
+    def __init__(self, task, aps, aps_env):
+        self.task = task
+        self.aps = aps
+        self.aps_env = aps_env
+
+    def sample(self):
+        
+        #stl_spec =  'eventually[0,4](R0 >= 0.8)'
+        #stl_spec_env = 'eventually[0,401](R0 >= 0.8)'
+        #stl_spec = 'not ((J0 > 0.8) or (R0 > 0.8) or (Y0 > 0.8)) until[0, 3] ((W0 > 0.8) and ((not ((J0 > 0.8) or (R0 > 0.8) or (W0 > 0.8))) until[0, 3] (Y0 > 0.8)))'
+        
+        aps = copy.copy(self.aps)
+        aps_env = copy.copy(self.aps_env)
+        indices = np.arange(len(aps))
+        random.shuffle(indices)
+
+        if self.task == 'avoid':
+            task_info = random.choice([('not (+) until[0, 5] ((+) and (not (+) until[0, 5] (+)))', 4), ('(not (+)) until[0, 9] (+)', 2)])
+            low_level_task_info = random.choice([('not (+) until[0, 500] ((+) and (not (+) until[0, 500] (+)))', 4), ('(not (+)) until[0, 900] (+)', 2)])
+            sketch, num_ap = task_info
+            aps_index = random.sample(np.arange(len(aps)), k=num_ap)
+            for ap_index in aps_index:
+                sketch = sketch.replace('+', aps[ap_index], 1)
+        
+        elif self.task == 'chain':
+            sketch, num_ap = 'eventually[0, 6]( (+) and eventually[0, 6]((+) and eventually[0, 6]((+) and eventually[0, 6](+))))', 4
+            low_level, num_ap = 'eventually[0, 600]( (+) and eventually[0, 600]((+) and eventually[0, 600]((+) and eventually[0, 600](+))))', 4
+            for i in indices:
+                sketch = sketch.replace('+', aps[i], 1)
+                low_level = low_level.replace('+', aps_env[i], 1)
+
+        elif self.task == 'stable':
+            sketch = 'GF+'
+            ap = random.choice(aps)
+            sketch = sketch.replace('+', ap)
+
+        elif self.task == 'traverse':
+            sketch, num_ap = 'GF(+ && XF +) && G(!+)', 3
+            aps = random.sample(aps, k=num_ap)
+            for ap in aps:
+                sketch = sketch.replace('+', ap, 1)
+
+        return sketch, low_level
+        
+        
+def test_task_simpler():
+    ts = TaskSampler("avoid", ['R0 >= 0.8', 'Y0 >= 0.8', 'W0 >= 0.8', 'J0 >= 0.8'])
+    stl = ts.sample()
+    print(stl)
 # return the distances from the robot to regions +
 # parse the value function stl into ground truth stl (right now, we can manul to do this) +
 # construct StlOfflineMonitor from stl_ground_truth
@@ -59,10 +112,12 @@ def get_env_ground_truth_robustness_value(stl_env_spec, states: torch.Tensor, zo
     R = 1 - state_types[zone.Red]
     Y = 1 - state_types[zone.Yellow]
     
+    # print((state_types[zone.Red][0] < 0.2).nonzero(as_tuple=True)[0])
+    # print(state_types[zone.Red][0][(state_types[zone.Red][0] < 0.2).nonzero(as_tuple=True)[0]])
     
     dataset = {
         'time': torch.tensor([i for i in range(0, J.size()[1])]).repeat((states.size()[0], 1)).T,
-        'J0': J.Tmm,
+        'J0': J.T,
         'W0': W.T,
         'R0': R.T,
         'Y0': Y.T,
@@ -73,6 +128,52 @@ def get_env_ground_truth_robustness_value(stl_env_spec, states: torch.Tensor, zo
     return m
 
 
+def plot_traj_2d(env, traj, goals, filename):
+    fig, ax = plt.subplots(figsize=(12, 12))
+
+    ax.set_xlim(xmin=-2.5, xmax=2.5)
+    ax.set_ylim(ymin=-2.5, ymax=2.5)
+    # plot circle ranges
+    circle_color = env.env.zones
+    circle_pos = env.env.zones_pos
+    circles = []
+    for i in range(len(circle_color)):
+        if circle_color[i].name == 'JetBlack':
+            circles.append(plt.Circle((circle_pos[i][0], circle_pos[i][1]), 0.25, color='black'))
+        elif circle_color[i].name == 'Red':
+            circles.append(plt.Circle((circle_pos[i][0], circle_pos[i][1]), 0.25, color='red'))
+        elif circle_color[i].name == 'White':
+            circles.append(plt.Circle((circle_pos[i][0], circle_pos[i][1]), 0.25, color='darkgrey'))
+        elif circle_color[i].name == 'Yellow':
+            circles.append(plt.Circle((circle_pos[i][0], circle_pos[i][1]), 0.25, color='gold'))
+    for circle in circles:
+        ax.add_patch(circle)
+
+    # plot agent position
+    # traj = np.delete(traj, range(1, traj.shape[0], 10), axis=0)
+    # x, y = traj.T
+    x = traj[:, 0]
+    y = traj[:, 1]
+    for i in range(len(x)):
+        if i == 0:
+            color = 'pink'
+        else:
+            color = 'red'
+            if goals[i-1] == 0:
+                color = 'black'
+            if goals[i-1] == 1:
+                color = 'pink'
+            if goals[i-1] == 2:
+                color = 'red'
+            if goals[i-1] == 3:
+                color = 'gold'
+        ax.plot(x[i], y[i], linestyle='dashed', marker='x', color=color, linewidth=3)
+
+    ax.grid(True)
+    # ax.scatter(x, y)
+
+    fig.savefig('/app/vfstl/src/VFSTL/{}.png'.format(filename))
+    
 class ControllerEvaluator:
     # evaluate different controller 
     # evalutate matrices
@@ -82,14 +183,19 @@ class ControllerEvaluator:
         self.env = env
         pass
     
-    def evaluate(self, stl) -> None:
+    def one_step_prediction(self, stl) -> None:
         # evaluate the controller a given stl
         # state should be the labelling function(boolen)or predicate(real) result R4 [j, w, r, y]
-        state_trajectory = []
+        distance_trajectory = []
         action_trajectory = []
+        position_trajectory = []
+        goals = []
         # state = reset env
         obs = self.env.reset()
-        state_trajectory.append(self.env.get_distance_to_zones())
+        distance_trajectory.append(self.env.get_distance_to_zones())
+        position_trajectory.append(self.env.robot_pos)
+
+        zone_positions = self.env.zones_pos
         # set stl for controller
         self.controller.reset()
         self.controller.setTarget(stl)
@@ -98,9 +204,11 @@ class ControllerEvaluator:
         total_timestep = 0
         total_reward = 0
         while not done:
-            action, contoller_done = self.controller.predict(obs)
+            action, contoller_done, goal = self.controller.predict(obs)
             obs, reward, env_done, info = self.env.step(action)
-            state_trajectory.append(self.env.get_distance_to_zones())
+            distance_trajectory.append(self.env.get_distance_to_zones())
+            position_trajectory.append(self.env.robot_pos)
+            goals.append(goal.detach().cpu().numpy())
             action_trajectory.append(action)
             done = contoller_done #or env_done
             total_timestep+=1
@@ -109,11 +217,33 @@ class ControllerEvaluator:
             # result.real_states, controls,
         #rob = get_env_ground_truth_robustness_value()
         #get_timestep, get_robustness_value, get_success_rate
-        return state_trajectory, action_trajectory, total_reward, total_timestep
+        return distance_trajectory, action_trajectory, total_reward, total_timestep, position_trajectory, zone_positions, goals
     
-    def random_evaluate() -> None:
-        pass
-    
+    def random_evaluate(self, task, experiment_num, device) -> None:
+        # task: any of [avoid, chain]
+        ts = TaskSampler(task, ['J0 >= 0.9', 'W0 >= 0.9', 'R0 >= 0.9', 'Y0 >= 0.9'], ['J0 >= 0.75', 'W0 >= 0.75', 'R0 >= 0.75', 'Y0 >= 0.75'])
+        robs = []
+        #torch.tensor(s, device=device)
+        
+        for i in tqdm(range(experiment_num)):
+            stl, low= ts.sample()
+            print(stl)
+            print(low)
+            # stl =  'eventually[0,4](R0 >= 0.8 and eventually[0,5] (Y0 >= 0.8))'
+            # low = 'eventually[0,401](R0 >= 0.8 and eventually[0,501] (Y0 >= 0.8))'
+            # stl =  'eventually[0,4](R0 >= 0.8)'
+            # low = 'eventually[0,401](R0 >= 0.8)'
+            distances ,contorls, reward, timesteps, traj, zones_pos, goals = self.one_step_prediction(stl)
+            tensor_s = torch.tensor(distances, device=device)
+            tensor_s = tensor_s[None, :, :]
+            ro = get_env_ground_truth_robustness_value(low, tensor_s, self.env.zones, self.env.zone_types)
+            #plot_traj_2d(self.env, np.array(traj), np.array(goals), 'traj_{}'.format(low))
+            robs.append(ro[0])
+            print(ro[0])
+        
+        return robs
+        
+        
 
 def main(stl, stl_env):
         # Check if CUDA is available
@@ -138,35 +268,41 @@ def main(stl, stl_env):
         rewards=[0, 1],
         device=device,
     )
-    env.metadata['render.modes'] = ['rgb_array']
+    # env.metadata['render.modes'] = ['rgb_array']
     
     vf_num = 4
-    T_horizon = 10
+    T_horizon = 24
     skill_timesteps = 100
     
-    model = VFDynamicsMLP(env.goal_types)
+    model = VFDynamicsMLP(len(env.goals))
     model.load_state_dict(torch.load("/app/vfstl/src/VFSTL/dynamic_models/test_model_20240307_085639_11"))
-    dynamics = VFDynamics(model.to(device), vf_num)
+    dynamics = VFDynamics(model.to(device), len(env.goals))
     
-
-
-    controller = RandomShootingController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 65536, 100, device)
-    
+    # controller = RandomShootingController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 32768, 100, device)
+    controller = MPController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 16384, 50, device)
     evaluator = ControllerEvaluator(controller, env)
-    s,c,r,t = evaluator.evaluate(stl)
-    tensor_s = torch.tensor(s, device=device)
-    tensor_s = tensor_s[None, :, :]
-    ro = get_env_ground_truth_robustness_value(stl_env, tensor_s, env.zones, env.zone_types)
+    # s,c,r,t = evaluator.one_step_prediction(stl)
+    # tensor_s = torch.tensor(s, device=device)
+    # tensor_s = tensor_s[None, :, :]
+    # ro = get_env_ground_truth_robustness_value(stl_env, tensor_s, env.zones, env.zone_types)
+    robs = evaluator.random_evaluate('chain',1000, device)
+    robs = torch.stack(robs)
     
-    print(len(s))
-    print(ro)
+    print(robs[robs > 0].size())
+    np.save("/app/vfstl/src/VFSTL/robs_mpc_10000_chain",robs)
+    # print(len(s))
+    # print(ro[0])
     return
 
 if __name__ == "__main__":
-    stl_spec =  'eventually[0,4](R0 >= 0.8 and eventually[0,5] (Y0 >= 0.8))'
+    
     skill_timesteps = 100
     vf_to_ditance = 0.2
-    stl_spec_env = 'eventually[0,400](R0 >= 0.8 and eventually[0,500] (Y0 >= 0.8))'
-    
+    # stl_spec =  'eventually[0,4](R0 >= 0.8 and eventually[0,5] (Y0 >= 0.8))'
+    # stl_spec_env = 'eventually[0,401](R0 >= 0.8 and eventually[0,501] (Y0 >= 0.8))'
+    stl_spec =  'eventually[0,4](R0 >= 0.8)'
+    stl_spec_env = 'eventually[0,401](R0 >= 0.8)'
+    #stl_spec = 'not ((J0 > 0.8) or (R0 > 0.8) or (Y0 > 0.8)) until[0, 3] ((W0 > 0.8) and ((not ((J0 > 0.8) or (R0 > 0.8) or (W0 > 0.8))) until[0, 3] (Y0 > 0.8)))'
     main(stl_spec, stl_spec_env)
+    #test_task_simpler()
 
