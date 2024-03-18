@@ -15,4 +15,20 @@
     2. Build the docker with `docker build -t harryting/vfstlpy37_piptorch_cuda12.3:v1 .`
     3. Run this container by `docker run -it --gpus all -v ./:/app/vfstl/src harryting/vfstlpy37_piptorch_cuda12.3:v1`
 
-### 2. Build 
+### 2. Build Conda environment
+* Using conda and install `pygraphviz`.
+    ```bash
+    conda install -c conda-forge pygraphviz
+    ```
+* Install [mujoco](https://www.roboti.us) and [mujoco-py](https://github.com/openai/mujoco-py)
+* Install [safty-gym](https://github.com/openai/safety-gym).
+    ```
+    pip install -e GCRL-LTL/zones/envs/safety/safety-gym/
+    ```
+* Install required packages
+    ```
+    conda update --file environment.yaml
+    ```
+
+
+
