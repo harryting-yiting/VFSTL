@@ -61,10 +61,10 @@ class TaskSampler:
         #         low_level = low_level.replace('+', aps_env[i], 1)
 
         elif self.task == 'chain':
-            sketch, num_ap = 'eventually[0, 3]( (+) and eventually[0, 3]((+) and eventually[0, 3]((+) and eventually[0, 3](+))))', 4
-            low_level, num_ap = 'eventually[0, 300]( (+) and eventually[0, 300]((+) and eventually[0, 300]((+) and eventually[0, 300](+))))', 4
-            #sketch, num_ap = 'eventually[0, 3]( (+) and eventually[0, 3]((+) and eventually[0, 4]((+))))', 3
-            #low_level, num_ap = 'eventually[0, 300]( (+) and eventually[0, 300]((+) and eventually[0, 400]((+))))', 3
+            # sketch, num_ap = 'eventually[0, 3]( (+) and eventually[0, 3]((+) and eventually[0, 3]((+) and eventually[0, 3](+))))', 4
+            # low_level, num_ap = 'eventually[0, 300]( (+) and eventually[0, 300]((+) and eventually[0, 300]((+) and eventually[0, 300](+))))', 4
+            sketch, num_ap = 'eventually[0, 3]( (+) and eventually[0, 3]((+) and eventually[0, 4]((+))))', 3
+            low_level, num_ap = 'eventually[0, 300]( (+) and eventually[0, 300]((+) and eventually[0, 400]((+))))', 3
             for i in indices:
                 print(aps[i])
                 print(aps_env[i])
@@ -302,12 +302,12 @@ class ControllerEvaluator:
 
 def main(stl, stl_env):
         # Check if CUDA is available
-    # if torch.cuda.is_available():
-    #     device = torch.device("cuda:0")
-    #     print("CUDA is available. Training on GPU.")
-    # else:
-    device = torch.device("cpu")
-    print("CUDA is not available. Training on CPU.")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+        print("CUDA is available. Training on GPU.")
+    else:
+        device = torch.device("cpu")
+        print("CUDA is not available. Training on CPU.")
 
     def cost_fn(state):
         return torch.randn(state.size()[0])
@@ -326,7 +326,7 @@ def main(stl, stl_env):
     # env.metadata['render.modes'] = ['rgb_array']
     
     vf_num = 4
-    T_horizon = 24
+    T_horizon = 20
     skill_timesteps = 20
     
     model = VFDynamicsMLPWithDropout(len(env.goals)).to(device=device)
