@@ -30,26 +30,27 @@ class RandomShootingOptimization():
 
     def optimize(self, num_sample_batches, batch_size, multiprocessing, init_state, device, pre_states = None):
         # return the best sample and there costs
-        self.mini_control = torch.randint(0, self.dynamics.size_discrete_actions, (self.timesteps,), device=device)
-        mini_state = []
-        mini_cost = 1000000
-        for i in range(0, num_sample_batches):
-            # generate random action sequence with batch_size * timesteps
-            controls = torch.randint(0, self.dynamics.size_discrete_actions, (batch_size, self.timesteps), device=device) 
-            # run simulation
-            # states dimsion: N * (T + 1) * M
-            # pre_states: t*M
-            states = self.dynamics.forward_simulation(controls, init_state)
-            states_add_init = torch.cat((init_state.repeat(batch_size, 1, 1 ), states), dim=1)
-            if pre_states != None:
-                 states_add_init = torch.cat((pre_states.repeat(batch_size, 1, 1 ), states_add_init), dim=1)
-            costs = self.cost_fn(states_add_init)
-            mini_index = torch.argmin(costs)
-             # get best control and cost
-            if costs[mini_index] < mini_cost:
-                mini_cost = costs[mini_index]
-                mini_control = controls[mini_index]
-                mini_state = states[mini_index]
+        with torch.no_grad:
+            self.mini_control = torch.randint(0, self.dynamics.size_discrete_actions, (self.timesteps,), device=device)
+            mini_state = []
+            mini_cost = 1000000
+            for i in range(0, num_sample_batches):
+                # generate random action sequence with batch_size * timesteps
+                controls = torch.randint(0, self.dynamics.size_discrete_actions, (batch_size, self.timesteps), device=device) 
+                # run simulation
+                # states dimsion: N * (T + 1) * M
+                # pre_states: t*M
+                states = self.dynamics.forward_simulation(controls, init_state)
+                states_add_init = torch.cat((init_state.repeat(batch_size, 1, 1 ), states), dim=1)
+                if pre_states != None:
+                    states_add_init = torch.cat((pre_states.repeat(batch_size, 1, 1 ), states_add_init), dim=1)
+                costs = self.cost_fn(states_add_init)
+                mini_index = torch.argmin(costs)
+                # get best control and cost
+                if costs[mini_index] < mini_cost:
+                    mini_cost = costs[mini_index]
+                    mini_control = controls[mini_index]
+                    mini_state = states[mini_index]
         
         return mini_control, mini_state, mini_cost
 
