@@ -410,20 +410,21 @@ class MCTSController:
         self.current_timestep = 0
         self.current_controls_plans = []
         self.prev_n_in_horizon = 0
+        self.stl_c = 0
 
     def setTarget(self, stl:str):
         self.op = MonteCarloTreeSearchNode(torch.zeros(1).to(self.device), self.dynamics, self.horizon, stl)
 
     def predict(self, obs):
         done = False
-        stl_c = 0
         if self.current_timestep == 0:
             init_values = torch.from_numpy(from_real_dict_to_vector(get_all_goal_value(obs, self.NNPolicy.policy, get_zone_vector(), self.device))).to(self.device)
             self.op.state = init_values
-            self.op.build_tree(100)
+            self.op.build_tree(100_000)
             controls, states, scores = best_action_sequence(self.op)
-            stl_c = stl_cost(states, self.op.stl)
-            print(stl_c)
+            
+            self.stl_c = stl_cost(states, self.op.stl)
+            print(f'{self.stl_c}-------------------------------------------------')
             print(controls)
             print(states)
             
@@ -444,15 +445,15 @@ class MCTSController:
         
         if (self.current_timestep > self.horizon * self.timesteps_pre_policy - 1) or (self.current_timestep > len(self.current_controls_plans) * self.timesteps_pre_policy - 1):
             done = True
-            self.reset()
             
-        return action, done, current_goal_index, stl_c
+        return action, done, current_goal_index, self.stl_c
 
     def reset(self):
         self.op = None # updated by setTarget
         self.current_timestep = 0
         self.current_controls_plans = []
         self.prev_n_in_horizon = 0
+        self.stl_c = 0
 
 # def test_mcts_controller(stl_spec:str):
 #     # Check if CUDA is available

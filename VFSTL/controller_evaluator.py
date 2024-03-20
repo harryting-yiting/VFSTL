@@ -8,7 +8,7 @@ from torch.utils.data.dataset import Dataset
 import sys
 from collect_skill_trajectories import get_all_goal_value, from_real_dict_to_vector
 from stable_baselines3 import PPO
-from train_dynamics import VFDynamicsMLPWithDropout
+from train_dynamics import VFDynamicsMLPWithDropout, VFDynamicsMLPLegacy
 # sys.path.insert(0, '/app/vfstl/lib/rtamt/build/lib/')
 import rtamt
 import time
@@ -65,8 +65,8 @@ class TaskSampler:
             # sketch, num_ap = 'eventually[0, 3]( (+) and eventually[0, 3]((+) and eventually[0, 3]((+) and eventually[0, 3](+))))', 4
             # low_level, num_ap = 'eventually[0, 300]( (+) and eventually[0, 300]((+) and eventually[0, 300]((+) and eventually[0, 300](+))))', 4
 
-            sketch, num_ap = 'eventually[0, 3](+) and eventually[0, 3](+) eventually[0, 4](+)', 3
-            low_level, num_ap = 'eventually[0, 300](+) and eventually[0, 300](+) eventually[0, 400](+)', 3
+            sketch, num_ap = 'eventually[0, 3]( (+) and eventually[0, 3]((+) and eventually[0, 4]((+))))', 3
+            low_level, num_ap = 'eventually[0, 300]( (+) and eventually[0, 300]((+) and eventually[0, 400]((+))))', 3
             for i in indices:
                 print(aps[i])
                 print(aps_env[i])
@@ -149,7 +149,7 @@ def get_env_ground_truth_robustness_value(stl_env_spec, states: torch.Tensor, zo
     # print(state_types[zone.Red][0][(state_types[zone.Red][0] < 0.2).nonzero(as_tuple=True)[0]])
     
     dataset = {
-        'time': torch.tensor([i for i in range(0, J.size()[1])]).repeat((states.size()[0], 1)).T.to(torch.device('cuda')),
+        'time': torch.tensor([i for i in range(0, J.size()[1])]).repeat((states.size()[0], 1)).T,
         'J0': J.T,
         'W0': W.T,
         'R0': R.T,
@@ -237,6 +237,7 @@ class ControllerEvaluator:
         total_timestep = 0
         total_reward = 0
         robot_in_zones = []
+        stl_c = 0
         while not done:
             action, contoller_done, goal, stl_c = self.controller.predict(obs)
             obs, reward, env_done, info = self.env.step(action)
@@ -280,7 +281,7 @@ class ControllerEvaluator:
             # low = 'eventually[0,401](R0 >= 0.8)'
             distances ,contorls, reward, timesteps, traj, zones_pos, goals, robot_in_zones, stl_c = self.one_epoch_prediction(stl)
             
-            tensor_s = torch.tensor(distances, device=device)
+            tensor_s = torch.tensor(distances)
             tensor_s = tensor_s[None, :, :]
             ro = get_env_ground_truth_robustness_value(low, tensor_s, self.env.zones, self.env.zone_types)
             
@@ -291,8 +292,8 @@ class ControllerEvaluator:
             print(robot_in_zones)
             print(ro[0])
 
-            if ro[0][1] >= 0:
-                succ += 1
+            # if ro[0][0] >= 0:
+            #     succ += 1
             print(succ)
             print(len(robs))
             print(find_s1_in_s2(zone_sequence, robot_in_zones))
@@ -330,12 +331,12 @@ def main(stl, stl_env):
     # env.metadata['render.modes'] = ['rgb_array']
     
     vf_num = 4
-    T_horizon = 5
-    skill_timesteps = 20
+    T_horizon = 11
+    skill_timesteps = 100
     with torch.no_grad():
-        model = VFDynamicsMLPWithDropout(len(env.goals)).to(device=device)
-        # model.load_state_dict(torch.load("/app/vfstl/src/VFSTL/dynamic_models/test_model_20240307_085639_11", map_location=device))
-        model.load_state_dict(torch.load("/app/vfstl/src/VFSTL/dynamic_models/new_20_timsteps_direct_model_20240320_075521_49", map_location=device)) 
+        model = VFDynamicsMLPLegacy(len(env.goals)).to(device=device)
+        model.load_state_dict(torch.load("/app/vfstl/src/VFSTL/dynamic_models/test_model_20240307_085639_11", map_location=device))
+        # model.load_state_dict(torch.load("/app/vfstl/src/VFSTL/dynamic_models/new_20_timsteps_direct_model_20240320_075521_49", map_location=device)) 
         dynamics = VFDynamics(model.to(device), len(env.goals))
         
         # controller = RandomShootingController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 32768, 100, device)
@@ -348,10 +349,16 @@ def main(stl, stl_env):
         # tensor_s = torch.tensor(s, device=device)
         # tensor_s = tensor_s[None, :, :]
         # ro = get_env_ground_truth_robustness_value(stl_env, tensor_s, env.zones, env.zone_types)
-        robs, stl_cs = evaluator.random_evaluate('chain', 1 , device)
+        robs, stl_cs = evaluator.random_evaluate('chain', 100 , device)
 
+        print('statis ----------------------------------------------------------------------------------------------------')
         print(robs)
         print(stl_cs)
+        robs= torch.stack(robs)
+        stl_cs = torch.stack(stl_cs)
+        path = '/app/vfstl/src/VFSTL/controller_evaluation_result/{}.pt'
+        torch.save(stl_cs, path.format('vf_estimated'))
+        torch.save(robs, path.format('ground_truth'))
         # robs = torch.stack(robs)
         # print(robs[robs > 0].size())
         # print(len(robs))
