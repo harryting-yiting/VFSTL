@@ -58,7 +58,7 @@ def main(args, surfix):
     skipped_steps = args.skipped_steps
     random_goal = args.random_goal
 
-    save_path = "/app/vfstl/src/VFSTL/dynamic_models/datasets/zone_dynamic_{}_{}_{}_{}_{}".format(
+    save_path = "/app/vfstl/src/VFSTL/dynamic_models/datasets/new_zone_dynamic_{}_{}_{}_{}_{}".format(
         skipped_steps, timeout, buffer_size, random_goal, surfix)
     
     model = PPO.load(model_path, device=device)
@@ -74,7 +74,7 @@ def main(args, surfix):
     current_size = 0
     
     vf_dimension = 4
-    vf_dynamic_dataset = np.zeros((buffer_size, 2*vf_dimension+1))
+    vf_dynamic_dataset = np.zeros((buffer_size, vf_dimension+1))
     with torch.no_grad():
         with tqdm(total=buffer_size) as pbar:
             while current_size < buffer_size:
@@ -88,17 +88,18 @@ def main(args, surfix):
                     action, _ = model.predict(env.current_observation(), deterministic=True)
                     obs, reward, eval_done, info = env.step(action)
                     local_steps = local_steps + 1
+                    
+                    values = from_real_dict_to_vector(get_all_goal_value(obs, model.policy, get_zone_vector(), device))
+                    goal_index = env.goal_index
+                    tmp_row = np.concatenate(([goal_index], values))
+                    vf_dynamic_dataset[current_size] = tmp_row
+                    current_size += 1
+                    prev_values = values
+                    # change to another goal and execute policy
                     if local_steps % skipped_steps == 0 :
-                        values = from_real_dict_to_vector(get_all_goal_value(obs, model.policy, get_zone_vector(), device))
-                        goal_index = env.goal_index
-                        tmp_row = np.concatenate(([goal_index], prev_values, values))
-                        vf_dynamic_dataset[current_size] = tmp_row
-                        current_size += 1
-                        prev_values = values
-                        # change to another goal and execute policy
                         if random_goal:
                             env.fix_goal(np.random.choice(env.goals))
-                        pbar.update(1)
+                    pbar.update(1)
 
     np.save(save_path, vf_dynamic_dataset)
     
@@ -109,9 +110,9 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--device', type=str, default='cuda')
 
-    parser.add_argument('--skipped_steps', type=int, default=100)
-    parser.add_argument('--timeout', type=int, default=10000)
-    parser.add_argument('--buffer_size', type=int, default=2000) #100,000/50 ,500,000 / 80 = 6250
+    parser.add_argument('--skipped_steps', type=int, default=100) #100
+    parser.add_argument('--timeout', type=int, default=1000)
+    parser.add_argument('--buffer_size', type=int, default=40000) #100,000/50 ,500,000 / 80 = 6250
     parser.add_argument('--random_goal', type=int, default=1)
     
 

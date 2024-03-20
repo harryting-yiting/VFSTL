@@ -8,8 +8,9 @@ from torch.utils.data.dataset import Dataset
 import sys
 from collect_skill_trajectories import get_all_goal_value, from_real_dict_to_vector
 from stable_baselines3 import PPO
-
+import math
 sys.path.append("/app/vfstl/src/GCRL-LTL/zones")
+import pandas as pd
 from envs import ZoneRandomGoalEnv
 from envs.utils import get_zone_vector
 from rl.traj_buffer import TrajectoryBufferDataset
@@ -20,7 +21,7 @@ def one_hot_encoding(arr:np.ndarray, num_class:int):
     return encoded_arr
 
 
-class VFDynamicsMLP(nn.Module):
+class VFDynamicsMLPLegacy(nn.Module):
     def __init__(self, state_dim) -> None:
         super().__init__()
         
@@ -43,6 +44,31 @@ class VFDynamicsMLP(nn.Module):
         with torch.no_grad():
             return self.model(x)
 
+# pleas ust this class for model trained after 3.20
+class VFDynamicsMLPWithDropout(nn.Module):
+    def __init__(self, state_dim) -> None:
+        super().__init__()
+        # input : one_hot + all vfs
+        # output: all vfs
+        self.model = nn.Sequential(
+            nn.Linear(2*state_dim, 1024),
+            nn.ReLU(),
+            nn.Dropout(),
+            nn.Linear(1024, 1024),
+            nn.ReLU(),
+            nn.Dropout(),
+            nn.Linear(1024, 1024),
+            nn.ReLU(),
+            nn.Dropout(),
+            nn.Linear(1024, state_dim)
+        )
+        
+    def forward(self, x):
+        return self.model(x)
+    
+    def predict(self, x):
+        with torch.no_grad():
+            return self.model(x)
 
 class VFDynamicDataset(Dataset):
     def __init__(self, data: np.ndarray, num_vf:int ) -> None:
@@ -150,7 +176,7 @@ class VFDynamicTrainer():
             # Track best performance, and save the model's state
             if avg_vloss < best_vloss:
                 best_vloss = avg_vloss
-                model_path = '/app/vfstl/src/VFSTL/dynamic_models/{}_model_{}_{}'.format(self.model_name,timestamp, epoch_number)
+                model_path = '/app/vfstl/src/VFSTL/dynamic_models/new_{}_model_{}_{}'.format(self.model_name,timestamp, epoch_number)
                 torch.save(self.model.state_dict(), model_path)
 
             epoch_number += 1
@@ -201,10 +227,31 @@ def combine_load_data(paths):
         data.append(np.load(path))
     return np.concatenate(data)
 
+def pre_process_new_dataset(raw_data,dataset_skipped_steps, target_skippped_steps, num_vf):
+    # data size n*(1+num_vf)
+    # return data size  (dataset_dynamic_steps-dynamic_skipped_steps+1) * (n / dataset_dynamic_steps) + 2* num_vf: skill, pre_vf, after_f 
+    n = raw_data.shape[0]
+    epoch = math.floor(n / dataset_skipped_steps)
+    num_samples_each_epoch = dataset_skipped_steps - target_skippped_steps + 1 
+    new_dataset = np.zeros((epoch*num_samples_each_epoch, 1+2*num_vf))
+    new_dataset_index = 0
+    for i in range(epoch):
+        for j in range(num_samples_each_epoch):
+            pre_vf_index = i * target_skippped_steps + j
+            after_vf_index = i * target_skippped_steps + j + target_skippped_steps
+            new_dataset[new_dataset_index, 0] = raw_data[pre_vf_index, 0]
+            new_dataset[new_dataset_index, 1:num_vf+1] = raw_data[pre_vf_index, 1:num_vf+1]   
+            new_dataset[new_dataset_index, num_vf+1 : 2*num_vf+1] = raw_data[after_vf_index, 1:num_vf+1]          
+            new_dataset_index+=1
+    # training_dataset = pd.DataFrame(raw_data)
+    # training_dataset.to_csv("{}_to_{}_training_data.csv".format(dataset_skipped_steps, target_skippped_steps))
+    return new_dataset
+
+
 def create_loading_paths(skipped_steps, timeout, buffer_size, random_goal, max_surfix):
     paths = []
     for i in range(0, max_surfix):
-        save_path = "/app/vfstl/src/VFSTL/dynamic_models/datasets/zone_dynamic_{}_{}_{}_{}_{}.npy".format(
+        save_path = "/app/vfstl/src/VFSTL/dynamic_models/datasets/new_zone_dynamic_{}_{}_{}_{}_{}.npy".format(
             skipped_steps, timeout, buffer_size, random_goal, i)
         paths.append(save_path)
     return paths
@@ -218,20 +265,33 @@ def main():
         device = torch.device("cpu")
         print("CUDA is not available. Training on CPU.")
     
-    data_paths = create_loading_paths(100, 10000, 2000, 1, 60)
+    dataset_skipped_steps = 100
+    target_skippped_steps = 20
+    timeout=1000
+    buffer_size=40000
+    random_goal=1
+    max_surfix=60
+    epochs = 100
+    # n_timesteps_direct
+    # n_timesteps_difference
+    model_name='{}_timsteps_direct'.format(target_skippped_steps)
+    data_paths = create_loading_paths(dataset_skipped_steps, timeout, buffer_size, random_goal, max_surfix)
     raw_data = combine_load_data(data_paths)
     num_vf = 4
+    raw_data = pre_process_new_dataset(raw_data,dataset_skipped_steps, target_skippped_steps, num_vf)
+    np.random.shuffle(raw_data)
     vali_dataset_len = int(np.shape(raw_data)[0] * 0.2)
-    train_dataset_len = int(np.shape(raw_data)[0] - vali_dataset_len)
-    vali_dataset_len = 5
-    train_raw_data = raw_data[:train_dataset_len]
-    vali_raw_data = raw_data[train_dataset_len: train_dataset_len+vali_dataset_len]
+    vali_raw_data = raw_data[:vali_dataset_len]
+    train_raw_data = raw_data[vali_dataset_len:]
+    print(np.shape(vali_raw_data))
+    print(np.shape(train_raw_data))
+    print(np.shape(raw_data))
     train_loader = torch.utils.data.DataLoader(VFDynamicDataset(train_raw_data, num_vf), batch_size=1024, shuffle=True)
     val_loader = torch.utils.data.DataLoader(VFDynamicDataset(vali_raw_data, num_vf), batch_size=1024, shuffle=True)
     
     
-    dy_model = VFDynamicsMLP(num_vf)
-    trainer = VFDynamicTrainer(dy_model, train_loader, val_loader, 100, "test", device)
+    dy_model = VFDynamicsMLPWithDropout(num_vf)
+    trainer = VFDynamicTrainer(dy_model, train_loader, val_loader, epochs, model_name, device)
     trainer.train()
     
 if __name__ == "__main__":
