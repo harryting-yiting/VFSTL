@@ -3,7 +3,7 @@
 import sys
 from tqdm import tqdm
 
-sys.path.insert(0, '/app/vfstl/lib/rtamt/build/lib/')
+# sys.path.insert(0, '/app/vfstl/lib/rtamt/build/lib/')
 import rtamt
 import time
 from datetime import datetime
@@ -28,53 +28,97 @@ from train_dynamics import VFDynamicsMLPLegacy, VFDynamics, VFDynamicsMLPWithDro
 ZONE_OBS_DIM = 24
 
 def stl_cost(states, stl_spec):
-    # from list of tensor, to one tensor
-    states_tensor = torch.zeros([len(states), states[0].size()[0]])         # T x vfs_dim
-    for i in range(len(states)):
-        states_tensor[i, :] = states[i]
+        device = torch.device('cuda')
+        if isinstance(states, list):
+            states = torch.stack(states).view(-1, 4)
+        if len(states.size()) < 3:
+            states = states[None, :, :].to(device)
+
+
+        # state N* T+1(the one is the initail state) * M
+        spec = rtamt.StlDiscreteTimeOfflineSpecification()
+        spec.declare_var('J0', 'float')
+        spec.declare_var('W0', 'float')
+        spec.declare_var('R0', 'float')
+        spec.declare_var('Y0', 'float')
+        #spec.spec = 'eventually[0,2]((J0 >= 0.8) and eventually[0,2](W0 >= 0.8))'
+        #spec.spec = 'not ((J0 > 0.8) or (R0 > 0.8) or (Y0 > 0.8)) until[0, 3] ((W0 > 0.8) and ((not ((J0 > 0.8) or (R0 > 0.8) or (W0 > 0.8))) until[0, 3] (Y0 > 0.8)))'
+        #spec.spec = 'eventually[0,10](W0 >= 0.8)'
+        spec.spec = stl_spec
+        try:
+            spec.parse()
+            #spec.pastify()
+        except rtamt.RTAMTException as err:
+            print('RTAMT Exception: {}'.format(err))
+            sys.exit()
+
+        J = states[:,:, 0]
+        W = states[:,:, 1]
+        R = states[:,:, 2]
+        Y = states[:,:, 3]
+
+        dataset = {
+        'time': torch.tensor([i for i in range(0, J.size()[1])]).repeat((states.size()[0], 1)).T.to(device=states.device),
+        'J0': J.T,
+        'W0': W.T,
+        'R0': R.T,
+        'Y0': Y.T,
+        }
+        m = spec.evaluate(dataset)
+        m = torch.vstack(m)
+        robs = m[0,:]
+        return robs
+
+
+# def stl_cost(states, stl_spec):
+#     # from list of tensor, to one tensor
+#     states_tensor = torch.zeros([len(states), states[0].size()[0]])         # T x vfs_dim
+#     for i in range(len(states)):
+#         states_tensor[i, :] = states[i]
     
-    spec = rtamt.StlDiscreteTimeOfflineSpecification()
-    spec.declare_var('J0', 'float')
-    spec.declare_var('W0', 'float')
-    spec.declare_var('R0', 'float')
-    spec.declare_var('Y0', 'float')
-    # spec.spec = 'eventually[0,5]((W0 >= 0.8) and eventually[5,10](R0 >= 0.8))'
-    # spec.spec = 'eventually[0,10](W0 >= 0.8)'
-    spec.spec = stl_spec
+#     spec = rtamt.StlDiscreteTimeOfflineSpecification()
+#     spec.declare_var('J0', 'float')
+#     spec.declare_var('W0', 'float')
+#     spec.declare_var('R0', 'float')
+#     spec.declare_var('Y0', 'float')
+#     # spec.spec = 'eventually[0,5]((W0 >= 0.8) and eventually[5,10](R0 >= 0.8))'
+#     # spec.spec = 'eventually[0,10](W0 >= 0.8)'
+#     spec.spec = stl_spec
  
 
-    time = torch.arange(0, states_tensor.size()[0])
-    J = states_tensor[:, 0]
-    W = states_tensor[:, 1]
-    R = states_tensor[:, 2]
-    Y = states_tensor[:, 3]
+#     time = torch.arange(0, states_tensor.size()[0])
+#     J = states_tensor[:, 0]
+#     W = states_tensor[:, 1]
+#     R = states_tensor[:, 2]
+#     Y = states_tensor[:, 3]
 
-    dataset = {
-    'time': time,
-    'J0': J,
-    'W0': W,
-    'R0': R,
-    'Y0': Y,
-    }
+#     dataset = {
+#     'time': time,
+#     'J0': J,
+#     'W0': W,
+#     'R0': R,
+#     'Y0': Y,
+#     }
 
-    try:
-        spec.parse()
-        #spec.pastify()
-    except rtamt.RTAMTException as err:
-        print('RTAMT Exception: {}'.format(err))
-        sys.exit()
+#     try:
+#         spec.parse()
+#         #spec.pastify()
+#     except rtamt.RTAMTException as err:
+#         print('RTAMT Exception: {}'.format(err))
+#         sys.exit()
 
-    rob = spec.evaluate(dataset)
+#     rob = spec.evaluate(dataset)
 
-    return rob[0][1].item()
+#     return rob[0][1].item()
 
 class MonteCarloTreeSearchNode:
     def __init__(self, state, dynamics, max_step, stl, cur_step=0, parent=None, parent_action=None):
         self.dynamics = dynamics
+        self.device = torch.device('cuda')
         self.max_step = max_step
         self.cur_step = cur_step
         self.stl = stl
-        self.state = state
+        self.state = state.to(self.device)
         self.parent = parent
         self.parent_action = parent_action
         self.children = []
@@ -114,20 +158,50 @@ class MonteCarloTreeSearchNode:
         
 
     def rollout(self):
-        state_sequences = []
+        # batch N of current_state, T = max_step - cur_step, init_vfs = cur_state
+        device = torch.device('cuda')
 
-        current_rollout_state = self.state
-        state_sequences.append(current_rollout_state)
-        rollout_count = self.cur_step
-        while rollout_count < self.max_step: 
-            possible_moves = self.get_legal_actions()
+        T = self.max_step - self.cur_step
+        N = 100
+        cur_vfs = self.state.to(device).view(self.state.shape[0])
 
-            action = self.rollout_policy(possible_moves)
-            current_rollout_state = self.move(action, current_rollout_state)
-            state_sequences.append(current_rollout_state)
-            rollout_count += 1
+        rand_controls = torch.randint(0, self.state.shape[0], (N , T)).to(device)
+        roll_out_states = self.dynamics.forward_simulation(rand_controls, cur_vfs)
 
-        return self.game_result(self.traverse_state_seq() + state_sequences)
+        # put previous states to torch
+        prev_states = self.traverse_state_seq()
+        prev_states = torch.stack(prev_states).view(-1, 4)
+        prev_states = prev_states.repeat(N, 1, 1).to(device)
+
+        # stack cur states to batch
+        cur_vfs = cur_vfs.repeat(N, 1).to(device)
+        cur_vfs = cur_vfs[:, None, :]
+
+        # stack all states
+        all_states = torch.cat((prev_states, cur_vfs, roll_out_states), 1)
+
+        # evaluate as a batch
+        stl_robs = stl_cost(all_states, self.stl)
+
+        return torch.mean(stl_robs)
+        # state_sequences = []  
+
+        # current_rollout_state = self.state
+
+        # prev_states + rollout_states 
+        # return mean.stl(combined_states)
+
+        # state_sequences.append(current_rollout_state)
+        # rollout_count = self.cur_step
+        # while rollout_count < self.max_step: 
+        #     possible_moves = self.get_legal_actions()
+
+        #     action = self.rollout_policy(possible_moves)
+        #     current_rollout_state = self.move(action, current_rollout_state)
+        #     state_sequences.append(current_rollout_state)
+        #     rollout_count += 1
+
+        # return self.game_result(self.traverse_state_seq() + state_sequences)
 
     def backpropagate(self, reward):
         self._number_of_visits += 1.
@@ -139,13 +213,13 @@ class MonteCarloTreeSearchNode:
         return len(self._untried_actions) == 0
     
     def best_child_max_score(self):
-        choices_weights =[(c.score / c.n()) for c in self.children]
-        return self.children[np.argmax(choices_weights)]
+        choices_weights = torch.tensor([(c.score / c.n()) for c in self.children], device=self.device)
+        return self.children[torch.argmax(choices_weights)]
 
     def best_child(self, c_param=0.1):
 
-        choices_weights = [(c.score / c.n()) + c_param * np.sqrt((2 * np.log(self.n()) / c.n())) for c in self.children]
-        return self.children[np.argmax(choices_weights)]
+        choices_weights = torch.tensor( [(c.score / c.n()) + c_param * np.sqrt((2 * np.log(self.n()) / c.n())) for c in self.children], device=self.device)
+        return self.children[torch.argmax(choices_weights)]
 
     def rollout_policy(self, possible_moves):
 
@@ -176,7 +250,7 @@ class MonteCarloTreeSearchNode:
     def move(self, action, state):
         device = torch.device('cuda')
         # return self.dynamics.forward_simulation(action, state)
-        return self.dynamics.one_step_simulation(torch.tensor(action).to(device).view(1), state[None, :].to(device)).to(torch.device('cpu')).view(4)
+        return self.dynamics.one_step_simulation(torch.tensor(action).to(device).view(1), state[None, :].to(device)).view(4)
 
     # def is_game_over(self):
     #     '''
@@ -338,17 +412,18 @@ class MCTSController:
         self.prev_n_in_horizon = 0
 
     def setTarget(self, stl:str):
-        self.op = MonteCarloTreeSearchNode(None, self.dynamics, self.horizon, stl)
+        self.op = MonteCarloTreeSearchNode(torch.zeros(1).to(self.device), self.dynamics, self.horizon, stl)
 
     def predict(self, obs):
         done = False
-
+        stl_c = 0
         if self.current_timestep == 0:
             init_values = torch.from_numpy(from_real_dict_to_vector(get_all_goal_value(obs, self.NNPolicy.policy, get_zone_vector(), self.device))).to(self.device)
             self.op.state = init_values
-            self.op.build_tree(100000)
+            self.op.build_tree(100)
             controls, states, scores = best_action_sequence(self.op)
-            print(stl_cost(states, self.op.stl))
+            stl_c = stl_cost(states, self.op.stl)
+            print(stl_c)
             print(controls)
             print(states)
             
@@ -371,7 +446,7 @@ class MCTSController:
             done = True
             self.reset()
             
-        return action, done, current_goal_index
+        return action, done, current_goal_index, stl_c
 
     def reset(self):
         self.op = None # updated by setTarget
@@ -379,61 +454,61 @@ class MCTSController:
         self.current_controls_plans = []
         self.prev_n_in_horizon = 0
 
-def test_mcts_controller(stl_spec:str):
-    # Check if CUDA is available
-    # if torch.cuda.is_available():
-    #     device = torch.device("cuda:0")
-    #     print("CUDA is available. Training on GPU.")
-    # else:
-    device = torch.device("cpu")
-    # print("CUDA is not available. Training on CPU.")
+# def test_mcts_controller(stl_spec:str):
+#     # Check if CUDA is available
+#     # if torch.cuda.is_available():
+#     #     device = torch.device("cuda:0")
+#     #     print("CUDA is available. Training on GPU.")
+#     # else:
+#     device = torch.device("cpu")
+#     # print("CUDA is not available. Training on CPU.")
 
     
-    model_path = '/app/vfstl/src/GCRL-LTL/zones/models/goal-conditioned/best_model_ppo_8'
-    policy_model = PPO.load(model_path, device=device)
-    timeout = 10000
-    env = ZoneRandomGoalEnv(
-        env=gym.make('Zones-8-v0', timeout=timeout), 
-        primitives_path='/app/vfstl/src/GCRL-LTL/zones/models/primitives', 
-        goals_representation=get_zone_vector(),
-        use_primitves=True,
-        rewards=[0, 1],
-        device=device,
-    )
+#     model_path = '/app/vfstl/src/GCRL-LTL/zones/models/goal-conditioned/best_model_ppo_8'
+#     policy_model = PPO.load(model_path, device=device)
+#     timeout = 10000
+#     env = ZoneRandomGoalEnv(
+#         env=gym.make('Zones-8-v0', timeout=timeout), 
+#         primitives_path='/app/vfstl/src/GCRL-LTL/zones/models/primitives', 
+#         goals_representation=get_zone_vector(),
+#         use_primitves=True,
+#         rewards=[0, 1],
+#         device=device,
+#     )
     
-    vf_num = 4
-    T_horizon = 24
-    skill_timesteps = 100
+#     vf_num = 4
+#     T_horizon = 24
+#     skill_timesteps = 100
     
 
-    # model = VFDynamicsMLP(vf_num).to(device=device)
-    # model.load_state_dict(torch.load('/app/vfstl/src/VFSTL/dynamic_models/test_model_20240307_085639_11', map_location=device))
-    # dynamic = VFDynamics(model, vf_num)
+#     # model = VFDynamicsMLP(vf_num).to(device=device)
+#     # model.load_state_dict(torch.load('/app/vfstl/src/VFSTL/dynamic_models/test_model_20240307_085639_11', map_location=device))
+#     # dynamic = VFDynamics(model, vf_num)
 
-    model = VFDynamicsMLPLegacy(vf_num).to(device=device)
-    model.load_state_dict(torch.load("/app/vfstl/src/VFSTL/dynamic_models/test_model_20240307_085639_11", map_location=device))
-    dynamics = VFDynamics(model.to(device), vf_num)
+#     model = VFDynamicsMLPLegacy(vf_num).to(device=device)
+#     model.load_state_dict(torch.load("/app/vfstl/src/VFSTL/dynamic_models/test_model_20240307_085639_11", map_location=device))
+#     dynamics = VFDynamics(model.to(device), vf_num)
     
     
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    env.metadata['render.modes'] = ['rgb_array']
-    video_rec = VR.VideoRecorder(env, path = "./test_{}_{}.mp4".format(stl_spec, timestamp))
-    controller = MCTSController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 65536, 100, device)
-    controller.setTarget(stl_spec)
-    obs = env.reset()
-    done = False
-    while not done:
-        action, controller_done, _ = controller.predict(obs)
-        obs, reward, eval_done, info = env.step(action)
-        done = controller_done
-        video_rec.capture_frame()
-    video_rec.close()
-    env.close()
+#     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+#     env.metadata['render.modes'] = ['rgb_array']
+#     video_rec = VR.VideoRecorder(env, path = "./test_{}_{}.mp4".format(stl_spec, timestamp))
+#     controller = MCTSController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 65536, 100, device)
+#     controller.setTarget(stl_spec)
+#     obs = env.reset()
+#     done = False
+#     while not done:
+#         action, controller_done, _ = controller.predict(obs)
+#         obs, reward, eval_done, info = env.step(action)
+#         done = controller_done
+#         video_rec.capture_frame()
+#     video_rec.close()
+#     env.close()
 
-if __name__ == '__main__':
+# if __name__ == '__main__':
     # stl_spec = 'eventually[0,4](W0 >= 0.8 and eventually[0,5] (J0 >= 0.8))'
-    stl_spec = 'eventually[0,5] (J0 >= 0.8)'
-    test_mcts_controller(stl_spec=stl_spec)
+    # stl_spec = 'eventually[0,5] (J0 >= 0.8)'
+    # test_mcts_controller(stl_spec=stl_spec)
 
     # device = torch.device("cpu")
 
