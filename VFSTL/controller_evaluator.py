@@ -44,13 +44,17 @@ class TaskSampler:
         new_sequence = []
 
         if self.task == 'avoid':
-            task_info = random.choice([('not (+) until[0, 5] ((+) and (not (+) until[0, 5] (+)))', 4), ('(not (+)) until[0, 9] (+)', 2)])
-            low_level_task_info = random.choice([('not (+) until[0, 500] ((+) and (not (+) until[0, 500] (+)))', 4), ('(not (+)) until[0, 900] (+)', 2)])
+            task_info = random.choice([('not (+) until[0, 5] ((+) and (not (+) until[0, 5] (+)))', 4), ('(not (+)) until[0, 3] (+)', 2)])
+            low_level_task_info = random.choice([('not (+) until[0, 500] ((+) and (not (+) until[0, 500] (+)))', 4), ('(not (+)) until[0, 300] (+)', 2)])
             sketch, num_ap = task_info
-            aps_index = random.sample(np.arange(len(aps)), k=num_ap)
+            low_level, num_ap = low_level_task_info
+            aps_index = random.sample(indices, k=num_ap)
             for ap_index in aps_index:
                 sketch = sketch.replace('+', aps[ap_index], 1)
-        
+                low_level = low_level.replace('+', aps_env[ap_index])
+                new_sequence.append(sequence[i])
+                
+                
         elif self.task == 'chain':
             sketch, num_ap = 'eventually[0, 3]( (+) and eventually[0, 3]((+) and eventually[0, 3]((+) and eventually[0, 3](+))))', 4
             low_level, num_ap = 'eventually[0, 300]( (+) and eventually[0, 300]((+) and eventually[0, 300]((+) and eventually[0, 300](+))))', 4
@@ -63,7 +67,9 @@ class TaskSampler:
                 new_sequence.append(sequence[i])
 
         elif self.task == 'stable':
-            sketch = 'GF+'
+            #= 'GF+'
+            sketch  = 'gloablly[0, 5](eventually[0, 3](+) )'
+            low_level = 'gloablly[0, 500](eventually[0, 300](+) )'
             ap = random.choice(aps)
             sketch = sketch.replace('+', ap)
 
@@ -89,9 +95,17 @@ def find_s1_in_s2(s1 , s2):
         
 
 def test_task_simpler():
+    print('testing: -----------chian------------')
     ts = TaskSampler("chain", ['J0 >= 0.9', 'W0 >= 0.9', 'R0 >= 0.9', 'Y0 >= 0.9'], ['J0 >= 0.75', 'W0 >= 0.75', 'R0 >= 0.75', 'Y0 >= 0.75'])
     stl, low, seq = ts.sample()
     print(stl)
+    print(low)
+    print(seq)
+    print('testing: ------------avoid------------')
+    ts = TaskSampler("avoid", ['J0 >= 0.9', 'W0 >= 0.9', 'R0 >= 0.9', 'Y0 >= 0.9'], ['J0 >= 0.75', 'W0 >= 0.75', 'R0 >= 0.75', 'Y0 >= 0.75'])
+    stl, low, seq = ts.sample()
+    print(stl)
+    print(low)
     print(seq)
 # return the distances from the robot to regions +
 # parse the value function stl into ground truth stl (right now, we can manul to do this) +
@@ -332,10 +346,10 @@ if __name__ == "__main__":
     # vf_to_ditance = 0.2
     # # stl_spec =  'eventually[0,4](R0 >= 0.8 and eventually[0,5] (Y0 >= 0.8))'
     # # stl_spec_env = 'eventually[0,401](R0 >= 0.8 and eventually[0,501] (Y0 >= 0.8))'
-    stl_spec =  'eventually[0,4](R0 >= 0.8)'
-    stl_spec_env = 'eventually[0,401](R0 >= 0.8)'
-    # #stl_spec = 'not ((J0 > 0.8) or (R0 > 0.8) or (Y0 > 0.8)) until[0, 3] ((W0 > 0.8) and ((not ((J0 > 0.8) or (R0 > 0.8) or (W0 > 0.8))) until[0, 3] (Y0 > 0.8)))'
-    main(stl_spec, stl_spec_env)
-    #est_task_simpler()
-    print(find_s1_in_s2(['a', 'b'], ['a', 'c', 'a', 'a', 'b', 'd','b']))
+    # stl_spec =  'eventually[0,4](R0 >= 0.8)'
+    # stl_spec_env = 'eventually[0,401](R0 >= 0.8)'
+    # # #stl_spec = 'not ((J0 > 0.8) or (R0 > 0.8) or (Y0 > 0.8)) until[0, 3] ((W0 > 0.8) and ((not ((J0 > 0.8) or (R0 > 0.8) or (W0 > 0.8))) until[0, 3] (Y0 > 0.8)))'
+    # main(stl_spec, stl_spec_env)
+    test_task_simpler()
+    # print(find_s1_in_s2(['a', 'b'], ['a', 'c', 'a', 'a', 'b', 'd','b']))
 
