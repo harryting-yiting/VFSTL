@@ -8,10 +8,12 @@ from torch.utils.data.dataset import Dataset
 import sys
 from collect_skill_trajectories import get_all_goal_value, from_real_dict_to_vector
 from stable_baselines3 import PPO
-from train_dynamics import VFDynamics, VFDynamicsMLP
+from train_dynamics import VFDynamicsMLPWithDropout
+sys.path.insert(0, '/app/vfstl/lib/rtamt/build/lib/')
 import rtamt
 import time
 from random_shooting import RandomShootingController, MPController
+from mcts import MCTSController, VFDynamics
 sys.path.append("/app/vfstl/src/GCRL-LTL/zones")
 from envs import ZoneRandomGoalEnv
 from envs.utils import get_zone_vector
@@ -53,11 +55,12 @@ class TaskSampler:
                 sketch = sketch.replace('+', aps[ap_index], 1)
                 low_level = low_level.replace('+', aps_env[ap_index])
                 new_sequence.append(sequence[i])
-                
-                
-        elif self.task == 'chain':
-            sketch, num_ap = 'eventually[0, 3]( (+) and eventually[0, 3]((+) and eventually[0, 3]((+) and eventually[0, 3](+))))', 4
-            low_level, num_ap = 'eventually[0, 300]( (+) and eventually[0, 300]((+) and eventually[0, 300]((+) and eventually[0, 300](+))))', 4
+
+            # sketch, num_ap = 'eventually[0, 3]( (+) and eventually[0, 3]((+) and eventually[0, 3]((+) and eventually[0, 3](+))))', 4
+            # low_level, num_ap = 'eventually[0, 300]( (+) and eventually[0, 300]((+) and eventually[0, 300]((+) and eventually[0, 300](+))))', 4
+
+            sketch, num_ap = 'eventually[0, 3](+) and eventually[0, 3](+) eventually[0, 4](+)', 3
+            low_level, num_ap = 'eventually[0, 300](+) and eventually[0, 300](+) eventually[0, 400](+)', 3
             for i in indices:
                 print(aps[i])
                 print(aps_env[i])
@@ -245,7 +248,10 @@ class ControllerEvaluator:
                 robot_in_zones.append(info['zone'])
             distance_trajectory.append(self.env.get_distance_to_zones())
             position_trajectory.append(self.env.robot_pos)
-            goals.append(goal.detach().cpu().numpy())
+            if isinstance(goal, int):
+                goals.append(np.asarray(goal))
+            else:
+                goals.append(goal.detach().cpu().numpy())
             action_trajectory.append(action)
             done = contoller_done #or env_done
             total_timestep+=1
@@ -258,11 +264,14 @@ class ControllerEvaluator:
     
     def random_evaluate(self, task, experiment_num, device, plot=False, exp_name='') -> None:
         # task: any of [avoid, chain]
-        ts = TaskSampler(task, ['J0 >= 0.9', 'W0 >= 0.9', 'R0 >= 0.9', 'Y0 >= 0.9'], ['J0 >= 0.75', 'W0 >= 0.75', 'R0 >= 0.75', 'Y0 >= 0.75'])
+        # ts = TaskSampler(task, ['J0 >= 0.9', 'W0 >= 0.9', 'R0 >= 0.9', 'Y0 >= 0.9'], ['J0 >= 0.75', 'W0 >= 0.75', 'R0 >= 0.75', 'Y0 >= 0.75'])
+        # ts = TaskSampler(task, ['R0 >= 0.9', 'Y0 >= 0.9'], ['R0 >= 0.75', 'Y0 >= 0.75'])
+        ts = TaskSampler(task, ['J0 >= 0.9', 'R0 >= 0.9', 'Y0 >= 0.9'], ['J0 >= 0.75', 'R0 >= 0.75', 'Y0 >= 0.75'])
         robs = []
         truth = []
         #torch.tensor(s, device=device)
-        
+        succ = 0
+
         for i in tqdm(range(experiment_num)):
             stl, low, zone_sequence= ts.sample()
             print(stl)
@@ -283,9 +292,15 @@ class ControllerEvaluator:
             truth.append(find_s1_in_s2(zone_sequence, robot_in_zones))
             print(robot_in_zones)
             print(ro[0])
+
+            if ro[0][1] >= 0:
+                succ += 1
+            print(succ)
+            print(len(robs))
             print(find_s1_in_s2(zone_sequence, robot_in_zones))
             if plot:
                 plot_traj_2d(self.env, np.array(traj), np.array(goals), '{}_traj_{}'.format(exp_name, low))
+
         
         return robs
         
@@ -294,7 +309,7 @@ class ControllerEvaluator:
 def main(stl, stl_env):
         # Check if CUDA is available
     if torch.cuda.is_available():
-        device = torch.device("cuda:0")
+        device = torch.device("cuda")
         print("CUDA is available. Training on GPU.")
     else:
         device = torch.device("cpu")
@@ -317,24 +332,29 @@ def main(stl, stl_env):
     # env.metadata['render.modes'] = ['rgb_array']
     
     vf_num = 4
-    T_horizon = 13
-    skill_timesteps = 100
+    T_horizon = 20
+    skill_timesteps = 20
     
-    model = VFDynamicsMLP(len(env.goals))
-    model.load_state_dict(torch.load("/app/vfstl/src/VFSTL/dynamic_models/test_model_20240307_085639_11"))
+    model = VFDynamicsMLPWithDropout(len(env.goals)).to(device=device)
+    # model.load_state_dict(torch.load("/app/vfstl/src/VFSTL/dynamic_models/test_model_20240307_085639_11", map_location=device))
+    model.load_state_dict(torch.load("/app/vfstl/src/VFSTL/dynamic_models/new_20_timsteps_direct_model_20240320_075521_49", map_location=device)) 
     dynamics = VFDynamics(model.to(device), len(env.goals))
     
-    controller = RandomShootingController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 32768, 20, device)
+    # controller = RandomShootingController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 32768, 100, device)
+    # controller = MPController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 16384, 50, device)
+    controller = MCTSController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 16384, 50, device)
+    # controller = RandomShootingController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 32768, 20, device)
     #controller = MPController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 16384, 50, device)
     evaluator = ControllerEvaluator(controller, env)
     # s,c,r,t = evaluator.one_step_prediction(stl)
     # tensor_s = torch.tensor(s, device=device)
     # tensor_s = tensor_s[None, :, :]
     # ro = get_env_ground_truth_robustness_value(stl_env, tensor_s, env.zones, env.zone_types)
-    robs = evaluator.random_evaluate('chain',1000, device)
+    robs = evaluator.random_evaluate('chain',10 , device)
     robs = torch.stack(robs)
     
     print(robs[robs > 0].size())
+    print(len(robs))
     np.save("/app/vfstl/src/VFSTL/robs_mpc_10000_chain",robs)
     # print(len(s))
     # print(ro[0])

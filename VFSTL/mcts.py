@@ -1,15 +1,20 @@
 # reference https://ai-boson.github.io/mcts/
 
+import sys
 from tqdm import tqdm
+
+sys.path.insert(0, '/app/vfstl/lib/rtamt/build/lib/')
 import rtamt
 import time
+from datetime import datetime
+import math
 import numpy as np
 import torch
 import torch.nn as nn
 from stable_baselines3 import PPO
 from collections import defaultdict
 import gym
-import sys
+import random
 import matplotlib.pyplot as plt
 
 # sys.path.append("/home/leo/Desktop/VFSTL/GCRL-LTL/zones/")
@@ -18,9 +23,11 @@ from envs import ZoneRandomGoalEnv
 from envs.utils import get_zone_vector
 from gym.wrappers.monitor import video_recorder as VR
 from collect_skill_trajectories import get_all_goal_value, from_real_dict_to_vector
-from train_dynamics import VFDynamicsMLP
+from train_dynamics import VFDynamicsMLPLegacy, VFDynamics, VFDynamicsMLPWithDropout
 
-def stl_cost(states):
+ZONE_OBS_DIM = 24
+
+def stl_cost(states, stl_spec):
     # from list of tensor, to one tensor
     states_tensor = torch.zeros([len(states), states[0].size()[0]])         # T x vfs_dim
     for i in range(len(states)):
@@ -33,7 +40,7 @@ def stl_cost(states):
     spec.declare_var('Y0', 'float')
     # spec.spec = 'eventually[0,5]((W0 >= 0.8) and eventually[5,10](R0 >= 0.8))'
     # spec.spec = 'eventually[0,10](W0 >= 0.8)'
-    spec.spec = 'eventually[0,2]((J0 >= 0.8) and eventually[0,2](W0 >= 0.8))'
+    spec.spec = stl_spec
  
 
     time = torch.arange(0, states_tensor.size()[0])
@@ -62,10 +69,11 @@ def stl_cost(states):
     return rob[0][1].item()
 
 class MonteCarloTreeSearchNode:
-    def __init__(self, state, dynamics, max_step, cur_step, parent=None, parent_action=None):
+    def __init__(self, state, dynamics, max_step, stl, cur_step=0, parent=None, parent_action=None):
         self.dynamics = dynamics
         self.max_step = max_step
         self.cur_step = cur_step
+        self.stl = stl
         self.state = state
         self.parent = parent
         self.parent_action = parent_action
@@ -78,6 +86,7 @@ class MonteCarloTreeSearchNode:
 
     def untried_actions(self):
         self._untried_actions = self.get_legal_actions()
+        random.shuffle(self._untried_actions)
         return self._untried_actions
 
     # need to change to robustness value
@@ -93,7 +102,7 @@ class MonteCarloTreeSearchNode:
         action = self._untried_actions.pop()
         next_state = self.move(action, self.state)
         child_node = MonteCarloTreeSearchNode(
-            next_state, self.dynamics, self.max_step, self.cur_step+1, parent=self, parent_action=action)
+            next_state, self.dynamics, self.max_step, self.stl, self.cur_step+1, parent=self, parent_action=action)
 
         self.children.append(child_node)
         return child_node
@@ -130,7 +139,7 @@ class MonteCarloTreeSearchNode:
         return len(self._untried_actions) == 0
     
     def best_child_max_score(self):
-        choices_weights =[c.score for c in self.children]
+        choices_weights =[(c.score / c.n()) for c in self.children]
         return self.children[np.argmax(choices_weights)]
 
     def best_child(self, c_param=0.1):
@@ -156,6 +165,8 @@ class MonteCarloTreeSearchNode:
     def build_tree(self, iteration):
 
         for i in tqdm(range(iteration)):
+            # if i >= 90000:
+            #     x = True
             v = self._tree_policy()
             reward = v.rollout()
             v.backpropagate(reward)
@@ -163,7 +174,9 @@ class MonteCarloTreeSearchNode:
         # return self.best_child(c_param=0.)
 
     def move(self, action, state):
-        return self.dynamics.forward_simulation(action, state)
+        device = torch.device('cuda')
+        # return self.dynamics.forward_simulation(action, state)
+        return self.dynamics.one_step_simulation(torch.tensor(action).to(device).view(1), state[None, :].to(device)).to(torch.device('cpu')).view(4)
 
     # def is_game_over(self):
     #     '''
@@ -193,7 +206,7 @@ class MonteCarloTreeSearchNode:
         on your state corresponding to win,
         tie or a loss.
         '''
-        return stl_cost(states_sequence)
+        return stl_cost(states_sequence, self.stl)
 
     def traverse_state_seq(self):
         states_sequence = []
@@ -207,31 +220,73 @@ class MonteCarloTreeSearchNode:
         return states_sequence[::-1]
 
 
-class VFDynamics:
+# class VFDynamics:
 
-    def __init__(self, NNModel, size_discrete_actions) -> None:
-        self.NNModel = NNModel
-        self.size_discrete_actions = size_discrete_actions
+#     def __init__(self, NNModel, size_discrete_actions) -> None:
+#         self.NNModel = NNModel
+#         self.size_discrete_actions = size_discrete_actions
 
-    def forward_simulation(self, control, vfs):
-        # one hot control, concate with vfs, call model forward
-        control = nn.functional.one_hot(torch.tensor(control, dtype=torch.int64), num_classes=vfs.size()[0])
-        nn_input = torch.concatenate((control, vfs), 0)
-        return self.NNModel.predict(nn_input.to(torch.float32))
+#     def forward_simulation(self, control, vfs):
+#         # one hot control, concate with vfs, call model forward
+#         control = nn.functional.one_hot(torch.tensor(control, dtype=torch.int64), num_classes=vfs.size()[0])
+#         nn_input = torch.concatenate((control, vfs), 0)
+#         return self.NNModel.predict(nn_input.to(torch.float32))
+    
+# class VFDynamics():
 
+#     def __init__(self, NNModel, size_discrete_actions) -> None:
+#         self.NNModel = NNModel
+#         self.size_discrete_actions = size_discrete_actions
+
+#     def one_step_simulation(self, controls, vfs) -> None:
+#         # controls: R N should a vector of RN for parallel prediction of multiple trajectories
+#         # vfs: a array of R N*M, with N is the number of samples and M is equal to the total amount of skills
+#         # one_hot to controls
+#         controls = controls.view(1)
+#         controls = nn.functional.one_hot(controls.to(torch.int64), num_classes= vfs.size()[1])
+
+#         # concat control with vfs
+#         # try:
+#         nn_input = torch.concatenate((controls, vfs), 1)
+#         # except:
+#         #     x =0
+#         # # feed them into NN and get prediction
+        
+#         return self.NNModel(nn_input.to(torch.float32))
+
+#     def forward_simulation(self, control_seqs, init_vfs):
+#         # control_seqs: R: N * T, N: batch size, T: timesteps
+#         # init_vfs: R M, M: number of value functions
+#         # return N* T * M, no initial_vfs
+#         batch_num = control_seqs.size()[0]
+#         timesteps = control_seqs.size()[1]
+#         # s_t+1 = NN(st)
+        
+#         prev_vfs = init_vfs.repeat((batch_num, 1))
+#         vf_prediction = torch.zeros((batch_num, timesteps, init_vfs.size()[0]), device=prev_vfs.device)
+        
+#         for i in range(0, timesteps):
+#             vfs = self.one_step_simulation(control_seqs[:, i], prev_vfs)
+#             prev_vfs = vfs
+#             vf_prediction[:,i,:] = vfs
+        
+#         return vf_prediction
 
 
 def best_action_sequence(root):
     action_sequence = []
     states_sequence = []
+    score_sequence = []
     cur = root
     states_sequence.append(cur.state)
+    score_sequence.append(cur.score)
     while len(cur.children) > 0:
         cur = cur.best_child_max_score()
         states_sequence.append(cur.state)
         action_sequence.append(cur.parent_action)
+        score_sequence.append(cur.score)
 
-    return action_sequence, states_sequence
+    return action_sequence, states_sequence, score_sequence
 
 def plot_traj_2d(env, traj):
     fig, ax = plt.subplots(figsize=(12, 12))
@@ -264,69 +319,183 @@ def plot_traj_2d(env, traj):
 
     fig.savefig('plot_traj.png')     
     
+class MCTSController:
+    def __init__(self, timesteps_pre_policy: int,  nnPolicy: torch.nn.Module, dynamics, goals ,horizon: int, batch_size: int, epoch: int, device) -> None:
+        self.timesteps_pre_policy = timesteps_pre_policy
+        self.NNPolicy = nnPolicy
+        self.batch_size = batch_size
+        self.epoch = epoch
+        self.horizon = horizon
+        self.zone_vector = get_zone_vector()
+        self.device = device
+        self.dynamics = dynamics
+        self.goals = goals
 
-if __name__ == '__main__':
+        # updated
+        self.op = None # updated by setTarget
+        self.current_timestep = 0
+        self.current_controls_plans = []
+        self.prev_n_in_horizon = 0
+
+    def setTarget(self, stl:str):
+        self.op = MonteCarloTreeSearchNode(None, self.dynamics, self.horizon, stl)
+
+    def predict(self, obs):
+        done = False
+
+        if self.current_timestep == 0:
+            init_values = torch.from_numpy(from_real_dict_to_vector(get_all_goal_value(obs, self.NNPolicy.policy, get_zone_vector(), self.device))).to(self.device)
+            self.op.state = init_values
+            self.op.build_tree(100000)
+            controls, states, scores = best_action_sequence(self.op)
+            print(stl_cost(states, self.op.stl))
+            print(controls)
+            print(states)
+            
+            # print(scores)
+            self.current_controls_plans = controls
+
+        new_n_horizon = math.floor(self.current_timestep / self.timesteps_pre_policy)
+        current_goal_index = self.current_controls_plans[new_n_horizon]
+        obs = np.concatenate((obs[:-ZONE_OBS_DIM], self.zone_vector[self.goals[current_goal_index]]))
+        action, _ = self.NNPolicy.predict(obs, deterministic=True)
+        
+        # if(self.prev_n_in_horizon != new_n_horizon or self.current_timestep == 0):
+        #     print(torch.from_numpy(from_real_dict_to_vector(get_all_goal_value(obs, self.NNPolicy.policy, get_zone_vector(), self.device))).to(self.device))
+        #     print(current_goal_index)
+        # update class data
+        self.current_timestep += 1
+        self.prev_n_in_horizon = new_n_horizon
+        
+        if (self.current_timestep > self.horizon * self.timesteps_pre_policy - 1) or (self.current_timestep > len(self.current_controls_plans) * self.timesteps_pre_policy - 1):
+            done = True
+            self.reset()
+            
+        return action, done, current_goal_index
+
+    def reset(self):
+        self.op = None # updated by setTarget
+        self.current_timestep = 0
+        self.current_controls_plans = []
+        self.prev_n_in_horizon = 0
+
+def test_mcts_controller(stl_spec:str):
+    # Check if CUDA is available
+    # if torch.cuda.is_available():
+    #     device = torch.device("cuda:0")
+    #     print("CUDA is available. Training on GPU.")
+    # else:
     device = torch.device("cpu")
+    # print("CUDA is not available. Training on CPU.")
 
-    # lower level policy
-    # model_path = '../GCRL-LTL/zones/models/goal-conditioned/best_model_ppo_8'
+    
     model_path = '/app/vfstl/src/GCRL-LTL/zones/models/goal-conditioned/best_model_ppo_8'
-    sys.path.append("/app/vfstl/src/GCRL-LTL/zones")
     policy_model = PPO.load(model_path, device=device)
     timeout = 10000
     env = ZoneRandomGoalEnv(
-        env=gym.make('Zones-8-v0', timeout=timeout),
+        env=gym.make('Zones-8-v0', timeout=timeout), 
         primitives_path='/app/vfstl/src/GCRL-LTL/zones/models/primitives', 
         goals_representation=get_zone_vector(),
         use_primitves=True,
         rewards=[0, 1],
+        device=device,
     )
-
-    # set up video
-    env.metadata['render.modes'] = ['rgb_array']
-    video_rec = VR.VideoRecorder(env, path = "./result.mp4")
+    
+    vf_num = 4
+    T_horizon = 24
+    skill_timesteps = 100
     
 
-    # upper level policy
-    vf_num = 4
-    max_step = 10
-    model = VFDynamicsMLP(vf_num).to(device=device)
-    model.load_state_dict(torch.load('/app/vfstl/src/VFSTL/dynamic_models/test_model_20240307_085639_11', map_location=device))
-    dynamic = VFDynamics(model, vf_num)
+    # model = VFDynamicsMLP(vf_num).to(device=device)
+    # model.load_state_dict(torch.load('/app/vfstl/src/VFSTL/dynamic_models/test_model_20240307_085639_11', map_location=device))
+    # dynamic = VFDynamics(model, vf_num)
 
+    model = VFDynamicsMLPLegacy(vf_num).to(device=device)
+    model.load_state_dict(torch.load("/app/vfstl/src/VFSTL/dynamic_models/test_model_20240307_085639_11", map_location=device))
+    dynamics = VFDynamics(model.to(device), vf_num)
+    
+    
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    env.metadata['render.modes'] = ['rgb_array']
+    video_rec = VR.VideoRecorder(env, path = "./test_{}_{}.mp4".format(stl_spec, timestamp))
+    controller = MCTSController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 65536, 100, device)
+    controller.setTarget(stl_spec)
     obs = env.reset()
-    init_state = torch.from_numpy(from_real_dict_to_vector(get_all_goal_value(obs, policy_model.policy, get_zone_vector(), device))).to(device)
-
-    root = MonteCarloTreeSearchNode(init_state, dynamic, max_step, cur_step=0)
-    root.build_tree(50000)
-    controls, states = best_action_sequence(root)
-
-    # print(controls)
-    # print(states)
-
-    # plot
-    T_horizon = 10
-    skill_timesteps = 100
-    traj = env.env.robot_pos[0:2]
-
-    # controls = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
-
-    for i in range(0, T_horizon):
-        frame = env.fix_goal(env.goals[controls[i]])
-        print(np.shape(frame))
-        for j in range(0, skill_timesteps):
-            action, _ = policy_model.predict(env.current_observation(), deterministic=True)
-            obs, reward, eval_done, info = env.step(action)
-            traj = np.vstack((traj, env.env.robot_pos[0:2]))
-            video_rec.capture_frame()
-            time.sleep(0.0001)
-        real_value = torch.from_numpy(from_real_dict_to_vector(get_all_goal_value(obs, policy_model.policy, get_zone_vector(), device))).to(device)
-        print('------------real value--------------')
-        print(real_value)
-
+    done = False
+    while not done:
+        action, controller_done, _ = controller.predict(obs)
+        obs, reward, eval_done, info = env.step(action)
+        done = controller_done
+        video_rec.capture_frame()
     video_rec.close()
-    plot_traj_2d(env, traj)
     env.close()
+
+if __name__ == '__main__':
+    # stl_spec = 'eventually[0,4](W0 >= 0.8 and eventually[0,5] (J0 >= 0.8))'
+    stl_spec = 'eventually[0,5] (J0 >= 0.8)'
+    test_mcts_controller(stl_spec=stl_spec)
+
+    # device = torch.device("cpu")
+
+    # # lower level policy
+    # # model_path = '../GCRL-LTL/zones/models/goal-conditioned/best_model_ppo_8'
+    # model_path = '/app/vfstl/src/GCRL-LTL/zones/models/goal-conditioned/best_model_ppo_8'
+    # sys.path.append("/app/vfstl/src/GCRL-LTL/zones")
+    # policy_model = PPO.load(model_path, device=device)
+    # timeout = 10000
+    # env = ZoneRandomGoalEnv(
+    #     env=gym.make('Zones-8-v0', timeout=timeout),
+    #     primitives_path='/app/vfstl/src/GCRL-LTL/zones/models/primitives', 
+    #     goals_representation=get_zone_vector(),
+    #     use_primitves=True,
+    #     rewards=[0, 1],
+    # )
+
+    # # set up video
+    # env.metadata['render.modes'] = ['rgb_array']
+    # video_rec = VR.VideoRecorder(env, path = "./result.mp4")
+    
+
+    # # upper level policy
+    # vf_num = 4
+    # max_step = 10
+    # model = VFDynamicsMLP(vf_num).to(device=device)
+    # model.load_state_dict(torch.load('/app/vfstl/src/VFSTL/dynamic_models/test_model_20240307_085639_11', map_location=device))
+    # dynamic = VFDynamics(model, vf_num)
+
+    # obs = env.reset()
+    # init_state = torch.from_numpy(from_real_dict_to_vector(get_all_goal_value(obs, policy_model.policy, get_zone_vector(), device))).to(device)
+
+    # root = MonteCarloTreeSearchNode(init_state, dynamic, max_step, stl_spec, cur_step=0)
+    # root.build_tree(50000)
+    # controls, states = best_action_sequence(root)
+
+    # # print(controls)
+    # # print(states)
+
+    # # plot
+    # T_horizon = 10
+    # skill_timesteps = 100
+    # traj = env.env.robot_pos[0:2]
+
+    # # controls = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+
+    # for i in range(0, T_horizon):
+    #     frame = env.fix_goal(env.goals[controls[i]])
+    #     print(np.shape(frame))
+    #     for j in range(0, skill_timesteps):
+    #         action, _ = policy_model.predict(env.current_observation(), deterministic=True)
+    #         obs, reward, eval_done, info = env.step(action)
+    #         traj = np.vstack((traj, env.env.robot_pos[0:2]))
+    #         video_rec.capture_frame()
+    #         time.sleep(0.0001)
+    #     real_value = torch.from_numpy(from_real_dict_to_vector(get_all_goal_value(obs, policy_model.policy, get_zone_vector(), device))).to(device)
+    #     print('------------real value--------------')
+    #     print(real_value)
+
+    # video_rec.close()
+    # plot_traj_2d(env, traj)
+    # env.close()
 
 
 
