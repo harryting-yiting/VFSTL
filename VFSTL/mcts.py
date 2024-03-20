@@ -23,7 +23,7 @@ from envs import ZoneRandomGoalEnv
 from envs.utils import get_zone_vector
 from gym.wrappers.monitor import video_recorder as VR
 from collect_skill_trajectories import get_all_goal_value, from_real_dict_to_vector
-from train_dynamics import VFDynamicsMLPLegacy
+from train_dynamics import VFDynamicsMLPLegacy, VFDynamics, VFDynamicsMLPWithDropout
 
 ZONE_OBS_DIM = 24
 
@@ -176,7 +176,7 @@ class MonteCarloTreeSearchNode:
     def move(self, action, state):
         device = torch.device('cuda')
         # return self.dynamics.forward_simulation(action, state)
-        return self.dynamics.forward_simulation(torch.tensor(action).to(device), state[None, :].to(device))
+        return self.dynamics.one_step_simulation(torch.tensor(action).to(device).view(1), state[None, :].to(device)).to(torch.device('cpu')).view(4)
 
     # def is_game_over(self):
     #     '''
@@ -232,42 +232,45 @@ class MonteCarloTreeSearchNode:
 #         nn_input = torch.concatenate((control, vfs), 0)
 #         return self.NNModel.predict(nn_input.to(torch.float32))
     
-class VFDynamics():
+# class VFDynamics():
 
-    def __init__(self, NNModel, size_discrete_actions) -> None:
-        self.NNModel = NNModel
-        self.size_discrete_actions = size_discrete_actions
+#     def __init__(self, NNModel, size_discrete_actions) -> None:
+#         self.NNModel = NNModel
+#         self.size_discrete_actions = size_discrete_actions
 
-    def one_step_simulation(self, controls, vfs) -> None:
-        # controls: R N should a vector of RN for parallel prediction of multiple trajectories
-        # vfs: a array of R N*M, with N is the number of samples and M is equal to the total amount of skills
-        
-        # one_hot to controls
-        controls = nn.functional.one_hot(controls.to(torch.int64), num_classes= vfs.size()[1])
+#     def one_step_simulation(self, controls, vfs) -> None:
+#         # controls: R N should a vector of RN for parallel prediction of multiple trajectories
+#         # vfs: a array of R N*M, with N is the number of samples and M is equal to the total amount of skills
+#         # one_hot to controls
+#         controls = controls.view(1)
+#         controls = nn.functional.one_hot(controls.to(torch.int64), num_classes= vfs.size()[1])
 
-        # concat control with vfs
-        nn_input = torch.concatenate((controls, vfs), 1)
-        # feed them into NN and get prediction
+#         # concat control with vfs
+#         # try:
+#         nn_input = torch.concatenate((controls, vfs), 1)
+#         # except:
+#         #     x =0
+#         # # feed them into NN and get prediction
         
-        return self.NNModel(nn_input.to(torch.float32))
+#         return self.NNModel(nn_input.to(torch.float32))
 
-    def forward_simulation(self, control_seqs, init_vfs):
-        # control_seqs: R: N * T, N: batch size, T: timesteps
-        # init_vfs: R M, M: number of value functions
-        # return N* T * M, no initial_vfs
-        batch_num = control_seqs.size()[0]
-        timesteps = control_seqs.size()[1]
-        # s_t+1 = NN(st)
+#     def forward_simulation(self, control_seqs, init_vfs):
+#         # control_seqs: R: N * T, N: batch size, T: timesteps
+#         # init_vfs: R M, M: number of value functions
+#         # return N* T * M, no initial_vfs
+#         batch_num = control_seqs.size()[0]
+#         timesteps = control_seqs.size()[1]
+#         # s_t+1 = NN(st)
         
-        prev_vfs = init_vfs.repeat((batch_num, 1))
-        vf_prediction = torch.zeros((batch_num, timesteps, init_vfs.size()[0]), device=prev_vfs.device)
+#         prev_vfs = init_vfs.repeat((batch_num, 1))
+#         vf_prediction = torch.zeros((batch_num, timesteps, init_vfs.size()[0]), device=prev_vfs.device)
         
-        for i in range(0, timesteps):
-            vfs = self.one_step_simulation(control_seqs[:, i], prev_vfs)
-            prev_vfs = vfs
-            vf_prediction[:,i,:] = vfs
+#         for i in range(0, timesteps):
+#             vfs = self.one_step_simulation(control_seqs[:, i], prev_vfs)
+#             prev_vfs = vfs
+#             vf_prediction[:,i,:] = vfs
         
-        return vf_prediction
+#         return vf_prediction
 
 
 def best_action_sequence(root):

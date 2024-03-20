@@ -63,8 +63,9 @@ class TaskSampler:
         elif self.task == 'chain':
             # sketch, num_ap = 'eventually[0, 3]( (+) and eventually[0, 3]((+) and eventually[0, 3]((+) and eventually[0, 3](+))))', 4
             # low_level, num_ap = 'eventually[0, 300]( (+) and eventually[0, 300]((+) and eventually[0, 300]((+) and eventually[0, 300](+))))', 4
-            sketch, num_ap = 'eventually[0, 3]( (+) and eventually[0, 3]((+) and eventually[0, 4]((+))))', 3
-            low_level, num_ap = 'eventually[0, 300]( (+) and eventually[0, 300]((+) and eventually[0, 400]((+))))', 3
+
+            sketch, num_ap = 'eventually[0, 3](+) and eventually[0, 3](+) eventually[0, 4](+)', 3
+            low_level, num_ap = 'eventually[0, 300](+) and eventually[0, 300](+) eventually[0, 400](+)', 3
             for i in indices:
                 print(aps[i])
                 print(aps_env[i])

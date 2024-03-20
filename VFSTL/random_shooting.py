@@ -333,7 +333,7 @@ def test_random_shooting_controller(stl_spec:str):
     T_horizon = 10
     skill_timesteps = 100
     
-    model = VFDynamicsMLP(vf_num)
+    model = VFDynamicsMLPLegacy(vf_num)
     model.load_state_dict(torch.load("/app/vfstl/src/VFSTL/dynamic_models/test_model_20240307_085639_11"))
     dynamics = VFDynamics(model.to(device), vf_num)
     
