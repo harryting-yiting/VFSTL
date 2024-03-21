@@ -79,15 +79,22 @@ def get_stl_cost_function(stl_spec: str):
         R = states[:,:, 2]
         Y = states[:,:, 3]
 
+        horizon = J.size()[1]
+        batch_size = states.size()[0]
+        # tiemar = torch.tensor([i for i in range(0, J.size()[1])]).repeat((states.size()[0], 1)).T.to(device=states.device)
+        s = time.time()
+        timer = torch.arange(0, horizon, device=states.device).repeat((batch_size, 1))#.to(device=states.device)
+        e = time.time()
+        print('generating time: {}'.format(e-s))
         dataset = {
-        'time': torch.tensor([i for i in range(0, J.size()[1])]).repeat((states.size()[0], 1)).T.to(device=states.device),
+        'time':  timer,
         'J0': J.T,
         'W0': W.T,
         'R0': R.T,
         'Y0': Y.T,
         }
         m = spec.evaluate(dataset)
-        m = torch.vstack(m)
+        # m = torch.vstack(m)
         robs = m[0,:]
         return robs * -1
     
@@ -100,7 +107,7 @@ def get_stl_cost_function(stl_spec: str):
 def test_random_shooting():
         # Check if CUDA is available
     if torch.cuda.is_available():
-        device = torch.device("cuda:0")
+        device = torch.device("cuda")
         print("CUDA is available. Training on GPU.")
     else:
         device = torch.device("cpu")

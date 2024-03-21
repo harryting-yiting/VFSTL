@@ -238,7 +238,7 @@ def pre_process_new_dataset(raw_data,dataset_skipped_steps, target_skippped_step
     for i in range(epoch):
         for j in range(num_samples_each_epoch):
             pre_vf_index = i * target_skippped_steps + j
-            after_vf_index = i * target_skippped_steps + j + target_skippped_steps
+            after_vf_index = i * target_skippped_steps + j + target_skippped_steps - 1
             new_dataset[new_dataset_index, 0] = raw_data[pre_vf_index, 0]
             new_dataset[new_dataset_index, 1:num_vf+1] = raw_data[pre_vf_index, 1:num_vf+1]   
             new_dataset[new_dataset_index, num_vf+1 : 2*num_vf+1] = raw_data[after_vf_index, 1:num_vf+1]          
@@ -266,12 +266,12 @@ def main():
         print("CUDA is not available. Training on CPU.")
     
     dataset_skipped_steps = 100
-    target_skippped_steps = 20
+    target_skippped_steps = 100
     timeout=1000
     buffer_size=40000
     random_goal=1
     max_surfix=60
-    epochs = 100
+    epochs = 1000
     # n_timesteps_direct
     # n_timesteps_difference
     model_name='{}_timsteps_direct'.format(target_skippped_steps)

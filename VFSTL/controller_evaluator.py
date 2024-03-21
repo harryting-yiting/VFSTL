@@ -9,9 +9,10 @@ import sys
 from collect_skill_trajectories import get_all_goal_value, from_real_dict_to_vector
 from stable_baselines3 import PPO
 from train_dynamics import VFDynamicsMLPWithDropout
-sys.path.insert(0, '/app/vfstl/lib/rtamt/build/lib/')
+# sys.path.insert(0, '/app/vfstl/lib/rtamt/build/lib/')
 import rtamt
 import time
+from datetime import datetime
 from random_shooting import RandomShootingController, MPController
 from mcts import MCTSController, VFDynamics
 sys.path.append("/app/vfstl/src/GCRL-LTL/zones")
@@ -45,22 +46,34 @@ class TaskSampler:
         random.shuffle(indices)
         new_sequence = []
 
+        vfs_step = 15
+        low_level_step = 300
         if self.task == 'avoid':
-            task_info = random.choice([('not (+) until[0, 5] ((+) and (not (+) until[0, 5] (+)))', 4), ('(not (+)) until[0, 3] (+)', 2)])
-            low_level_task_info = random.choice([('not (+) until[0, 500] ((+) and (not (+) until[0, 500] (+)))', 4), ('(not (+)) until[0, 300] (+)', 2)])
+            # task_info = random.choice([('not (+) until[0, {}] ((+) and (not (+) until[0, {}] (+)))', 4), ('not (+) until[0, {}] (+)', 2)])
+            # low_level_task_info = random.choice([('not (+) until[0, {}] ((+) and (not (+) until[0, {}] (+)))', 4), ('not (+) until[0, ] (+)', 2)])
+            task_info = ('not (+) until[0, {}] ((+) and (not (+) until[0, {}] (+)))'.format(vfs_step, vfs_step), 4)
+            low_level_task_info = ('not (+) until[0, {}] ((+) and (not (+) until[0, {}] (+)))'.format(low_level_step, low_level_step), 4)
+            # task_info = ('not (+) until[0, {}] (+)'.format(vfs_step), 2)
+            # low_level_task_info = ('not (+) until[0, {}] (+)'.format(low_level_step), 2)
             sketch, num_ap = task_info
             low_level, num_ap = low_level_task_info
-            aps_index = random.sample(indices, k=num_ap)
+            print(indices)
+            print(num_ap)
+            aps_index = random.sample(indices.tolist(), k=num_ap)
+            print(aps_index)
             for ap_index in aps_index:
                 sketch = sketch.replace('+', aps[ap_index], 1)
-                low_level = low_level.replace('+', aps_env[ap_index])
-                new_sequence.append(sequence[i])
+                low_level = low_level.replace('+', aps_env[ap_index], 1)
+                new_sequence.append(sequence[ap_index])
 
-            # sketch, num_ap = 'eventually[0, 3]( (+) and eventually[0, 3]((+) and eventually[0, 3]((+) and eventually[0, 3](+))))', 4
-            # low_level, num_ap = 'eventually[0, 300]( (+) and eventually[0, 300]((+) and eventually[0, 300]((+) and eventually[0, 300](+))))', 4
+        elif self.task == 'chain':
+            # sketch, num_ap = 'eventually[0, {}]( (+) and eventually[0, {}]((+) and eventually[0, {}]((+) and eventually[0, {}](+))))'.format(vfs_step), 4
+            # low_level, num_ap = 'eventually[0, 300]( (+) and eventually[0, 300]((+) and eventually[0, 300]((+) and eventually[0, 300](+))))'.format(low_level_step), 4
 
-            sketch, num_ap = 'eventually[0, 3](+) and eventually[0, 3](+) eventually[0, 4](+)', 3
-            low_level, num_ap = 'eventually[0, 300](+) and eventually[0, 300](+) eventually[0, 400](+)', 3
+            sketch, num_ap = 'eventually[0, {}]( (+) and eventually[0, {}]((+) and eventually[0, {}]((+))))'.format(vfs_step, vfs_step, vfs_step), 3
+            low_level, num_ap = 'eventually[0, {}]( (+) and eventually[0, {}]((+) and eventually[0, {}]((+))))'.format(low_level_step, low_level_step, low_level_step), 3
+            # sketch, num_ap = 'eventually[0, 15](+) and eventually[16, 31](+) and eventually[32, 47](+)', 3
+            # low_level, num_ap = 'eventually[0, 300](+) and eventually[401, 701](+) and eventually[702, 1002](+)', 3
             for i in indices:
                 print(aps[i])
                 print(aps_env[i])
@@ -70,11 +83,12 @@ class TaskSampler:
                 new_sequence.append(sequence[i])
 
         elif self.task == 'stable':
-            #= 'GF+'
-            sketch  = 'gloablly[0, 5](eventually[0, 3](+) )'
-            low_level = 'gloablly[0, 500](eventually[0, 300](+) )'
-            ap = random.choice(aps)
-            sketch = sketch.replace('+', ap)
+            sketch  = 'eventually[0, {}](always[0, {}](+)) '.format(15, 10)
+            low_level = 'eventually[0, 500](always[0, 300](+))'
+            ap_i = random.choice(indices)
+            sketch = sketch.replace('+', aps[ap_i])
+            low_level = low_level.replace('+', aps_env[ap_i])
+            new_sequence.append(sequence[ap_i])
 
         elif self.task == 'traverse':
             sketch, num_ap = 'GF(+ && XF +) && G(!+)', 3
@@ -106,6 +120,12 @@ def test_task_simpler():
     print(seq)
     print('testing: ------------avoid------------')
     ts = TaskSampler("avoid", ['J0 >= 0.9', 'W0 >= 0.9', 'R0 >= 0.9', 'Y0 >= 0.9'], ['J0 >= 0.75', 'W0 >= 0.75', 'R0 >= 0.75', 'Y0 >= 0.75'])
+    stl, low, seq = ts.sample()
+    print(stl)
+    print(low)
+    print(seq)
+    print('testing: ------------stable------------')
+    ts = TaskSampler("stable", ['J0 >= 0.9', 'W0 >= 0.9', 'R0 >= 0.9', 'Y0 >= 0.9'], ['J0 >= 0.75', 'W0 >= 0.75', 'R0 >= 0.75', 'Y0 >= 0.75'])
     stl, low, seq = ts.sample()
     print(stl)
     print(low)
@@ -266,7 +286,7 @@ class ControllerEvaluator:
         # task: any of [avoid, chain]
         # ts = TaskSampler(task, ['J0 >= 0.9', 'W0 >= 0.9', 'R0 >= 0.9', 'Y0 >= 0.9'], ['J0 >= 0.75', 'W0 >= 0.75', 'R0 >= 0.75', 'Y0 >= 0.75'])
         # ts = TaskSampler(task, ['R0 >= 0.9', 'Y0 >= 0.9'], ['R0 >= 0.75', 'Y0 >= 0.75'])
-        ts = TaskSampler(task, ['J0 >= 0.9', 'R0 >= 0.9', 'Y0 >= 0.9'], ['J0 >= 0.75', 'R0 >= 0.75', 'Y0 >= 0.75'])
+        ts = TaskSampler(task, ['J0 >= 0.8', 'W0 >= 0.8','R0 >= 0.8', 'Y0 >= 0.8'], ['J0 >= 0.75', 'W0 >= 0.75','R0 >= 0.75', 'Y0 >= 0.75'])
         robs = []
         truth = []
         #torch.tensor(s, device=device)
@@ -293,8 +313,8 @@ class ControllerEvaluator:
             print(robot_in_zones)
             print(ro[0])
 
-            if ro[0][1] >= 0:
-                succ += 1
+            # if ro[0][1] >= 0:
+            #     succ += 1
             print(succ)
             print(len(robs))
             print(find_s1_in_s2(zone_sequence, robot_in_zones))
@@ -332,32 +352,33 @@ def main(stl, stl_env):
     # env.metadata['render.modes'] = ['rgb_array']
     
     vf_num = 4
-    T_horizon = 20
+    T_horizon = 30
     skill_timesteps = 20
-    
-    model = VFDynamicsMLPWithDropout(len(env.goals)).to(device=device)
-    # model.load_state_dict(torch.load("/app/vfstl/src/VFSTL/dynamic_models/test_model_20240307_085639_11", map_location=device))
-    model.load_state_dict(torch.load("/app/vfstl/src/VFSTL/dynamic_models/new_20_timsteps_direct_model_20240320_075521_49", map_location=device)) 
-    dynamics = VFDynamics(model.to(device), len(env.goals))
-    
-    # controller = RandomShootingController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 32768, 100, device)
-    # controller = MPController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 16384, 50, device)
-    controller = MCTSController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 16384, 50, device)
-    # controller = RandomShootingController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 32768, 20, device)
-    #controller = MPController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 16384, 50, device)
-    evaluator = ControllerEvaluator(controller, env)
-    # s,c,r,t = evaluator.one_step_prediction(stl)
-    # tensor_s = torch.tensor(s, device=device)
-    # tensor_s = tensor_s[None, :, :]
-    # ro = get_env_ground_truth_robustness_value(stl_env, tensor_s, env.zones, env.zone_types)
-    robs = evaluator.random_evaluate('chain',10 , device)
-    robs = torch.stack(robs)
-    
-    print(robs[robs > 0].size())
-    print(len(robs))
-    np.save("/app/vfstl/src/VFSTL/robs_mpc_10000_chain",robs)
-    # print(len(s))
-    # print(ro[0])
+    with torch.no_grad():
+        model = VFDynamicsMLPWithDropout(len(env.goals)).to(device=device)
+        # model.load_state_dict(torch.load("/app/vfstl/src/VFSTL/dynamic_models/test_model_20240307_085639_11", map_location=device))
+        model.load_state_dict(torch.load("/app/vfstl/src/VFSTL/dynamic_models/new_20_timsteps_direct_model_20240320_075521_49", map_location=device)) 
+        dynamics = VFDynamics(model.to(device), len(env.goals))
+        
+        # controller = RandomShootingController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 32768, 100, device)
+        #controller = MPController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 16384, 50, device)
+        #controller = MCTSController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 16384, 50, device)
+        #1_048_576
+        controller = RandomShootingController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 1_000_000, 1, device)
+        #controller = MPController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 500_000, 3, device)
+        evaluator = ControllerEvaluator(controller, env)
+        # s,c,r,t = evaluator.one_step_prediction(stl)
+        # tensor_s = torch.tensor(s, device=device)
+        # tensor_s = tensor_s[None, :, :]
+        # ro = get_env_ground_truth_robustness_value(stl_env, tensor_s, env.zones, env.zone_types)
+        robs = evaluator.random_evaluate('chain',3 , device, True, "{}_avoid_20_steps_mpc".format(datetime.now().strftime('%Y%m%d_%H%M%S')))
+        robs = torch.stack(robs)
+        
+        print(robs[robs > 0].size())
+        print(len(robs))
+        #np.save("/app/vfstl/src/VFSTL/robs_mpc_10000_chain",robs)
+        # print(len(s))
+        # print(ro[0])
     return
 
 if __name__ == "__main__":
