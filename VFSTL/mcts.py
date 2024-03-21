@@ -338,7 +338,7 @@ class MPCMCTSController:
             
             
         # may need to calculate vfs stl robust
-        return action, done, current_goal_index, self.high_level_controls
+        return action, done, current_goal_index, self.high_level_controls, self.pre_values
   
     def reset(self):
         self.stl = None # updated by setTarget

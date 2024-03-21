@@ -14,7 +14,7 @@ import rtamt
 import time
 from random_shooting import RandomShootingController, MPController
 
-from mcts import MCTSController, VFDynamics, MPCMCTSController
+from mcts import MCTSController, VFDynamics, MPCMCTSController, stl_cost
 sys.path.append("/app/vfstl/src/GCRL-LTL/zones")
 from envs import ZoneRandomGoalEnv
 from envs.utils import get_zone_vector
@@ -244,7 +244,7 @@ class ControllerEvaluator:
         stl_c = 0
         high_level_controls = []
         while not done:
-            action, contoller_done, goal, high_level_controls = self.controller.predict(obs)
+            action, contoller_done, goal, high_level_controls, vfs_states = self.controller.predict(obs)
             obs, reward, env_done, info = self.env.step(action)
             if info['zone']:
                 robot_in_zones.append(info['zone'])
@@ -262,7 +262,7 @@ class ControllerEvaluator:
             # result.real_states, controls,
         #rob = get_env_ground_truth_robustness_value()
         #get_timestep, get_robustness_value, get_success_rate
-        return distance_trajectory, action_trajectory, total_reward, total_timestep, position_trajectory, zone_positions, goals, robot_in_zones, stl_c, high_level_controls
+        return distance_trajectory, action_trajectory, total_reward, total_timestep, position_trajectory, zone_positions, goals, robot_in_zones, stl_c, high_level_controls, vfs_states
     
     def random_evaluate(self, task, experiment_num, device, plot=False, exp_name='') -> None:
         # task: any of [avoid, chain]
@@ -273,6 +273,7 @@ class ControllerEvaluator:
         robs = []
         truth = []
         stl_cs = []
+        vfs_robs = []
         #torch.tensor(s, device=device)
         succ = 0
 
@@ -285,7 +286,7 @@ class ControllerEvaluator:
             # low = 'eventually[0,401](R0 >= 0.8 and eventually[0,501] (Y0 >= 0.8))'
             # stl =  'eventually[0,4](R0 >= 0.8)'
             # low = 'eventually[0,401](R0 >= 0.8)'
-            distances ,contorls, reward, timesteps, traj, zones_pos, goals, robot_in_zones, stl_c, high_level_controls = self.one_epoch_prediction(stl)
+            distances ,contorls, reward, timesteps, traj, zones_pos, goals, robot_in_zones, stl_c, high_level_controls, vfs_states = self.one_epoch_prediction(stl)
             
             tensor_s = torch.tensor(distances)
             tensor_s = tensor_s[None, :, :]
@@ -300,6 +301,9 @@ class ControllerEvaluator:
           
             print(ro[0])
 
+            vfs_rob = stl_cost(vfs_states, stl)
+            vfs_robs.append(vfs_rob)
+
             # if ro[0][0] >= 0:
             #     succ += 1
             print(succ)
@@ -309,7 +313,7 @@ class ControllerEvaluator:
                 plot_traj_2d(self.env, np.array(traj), np.array(goals), '{}_traj_{}'.format(exp_name, low))
 
         
-        return robs, stl_cs, truth
+        return robs, stl_cs, truth, vfs_robs
         
         
 
@@ -350,7 +354,7 @@ def main(stl, stl_env):
         # controller = RandomShootingController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 32768, 100, device)
         # controller = MPController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 16384, 50, device)
         # controller = MCTSController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 16384, 50, device)
-        controller = MPCMCTSController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 10000, 1000, device)
+        controller = MPCMCTSController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 10000, 200, device)
         # controller = RandomShootingController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 32768, 20, device)
         #controller = MPController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 16384, 50, device)
         evaluator = ControllerEvaluator(controller, env)
@@ -358,18 +362,20 @@ def main(stl, stl_env):
         # tensor_s = torch.tensor(s, device=device)
         # tensor_s = tensor_s[None, :, :]
         # ro = get_env_ground_truth_robustness_value(stl_env, tensor_s, env.zones, env.zone_types)
-        robs, stl_cs, truth = evaluator.random_evaluate('chain', 100 , device)
+        robs, stl_cs, truth, vfs_robs = evaluator.random_evaluate('chain', 100 , device)
 
         print('statis ----------------------------------------------------------------------------------------------------')
         print(robs)
         print(stl_cs)
         robs= torch.stack(robs)
+        vfs_robs = torch.stack(vfs_robs)
         print(f'Total Success in Zone Seq: {sum(truth)}')
         # stl_cs = torch.stack(stl_cs)
         path = '/app/vfstl/src/VFSTL/controller_evaluation_result/{}.pt'
         # torch.save(stl_cs, path.format('vf_estimated'))
         torch.save(truth, path.format('zone_truth'))
         torch.save(robs, path.format('ground_truth'))
+        torch.save(vfs_robs, path.format('vfs_robs'))
         # robs = torch.stack(robs)
         # print(robs[robs > 0].size())
         # print(len(robs))
