@@ -1,0 +1,1 @@
+cp /app/vfstl/src/VFSTL/modified_src/ast_visitor.py /opt/conda/envs/myenv/lib/python3.7/site-packages/rtamt/semantics/stl/discrete_time/offline/ast_visitor.py
