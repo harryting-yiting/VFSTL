@@ -27,10 +27,11 @@ import copy
 
 
 class TaskSampler:
-    def __init__(self, task, aps, aps_env):
+    def __init__(self, task, aps, aps_env, sequence):
         self.task = task
         self.aps = aps
         self.aps_env = aps_env
+        self.sequence = sequence
 
     def sample(self):
         
@@ -42,7 +43,9 @@ class TaskSampler:
         aps_env = copy.copy(self.aps_env)
         indices = np.arange(len(aps))
         # sequence = ['J', 'W', 'R', 'Y']
-        sequence = ['J', 'R', 'Y']
+
+        # sequence = ['J', 'R', 'Y']
+        sequence = self.sequence
         
         random.shuffle(indices)
         new_sequence = []
@@ -239,8 +242,9 @@ class ControllerEvaluator:
         total_reward = 0
         robot_in_zones = []
         stl_c = 0
+        high_level_controls = []
         while not done:
-            action, contoller_done, goal = self.controller.predict(obs)
+            action, contoller_done, goal, high_level_controls = self.controller.predict(obs)
             obs, reward, env_done, info = self.env.step(action)
             if info['zone']:
                 robot_in_zones.append(info['zone'])
@@ -258,13 +262,14 @@ class ControllerEvaluator:
             # result.real_states, controls,
         #rob = get_env_ground_truth_robustness_value()
         #get_timestep, get_robustness_value, get_success_rate
-        return distance_trajectory, action_trajectory, total_reward, total_timestep, position_trajectory, zone_positions, goals, robot_in_zones, stl_c
+        return distance_trajectory, action_trajectory, total_reward, total_timestep, position_trajectory, zone_positions, goals, robot_in_zones, stl_c, high_level_controls
     
     def random_evaluate(self, task, experiment_num, device, plot=False, exp_name='') -> None:
         # task: any of [avoid, chain]
         # ts = TaskSampler(task, ['J0 >= 0.9', 'W0 >= 0.9', 'R0 >= 0.9', 'Y0 >= 0.9'], ['J0 >= 0.75', 'W0 >= 0.75', 'R0 >= 0.75', 'Y0 >= 0.75'])
         # ts = TaskSampler(task, ['R0 >= 0.9', 'Y0 >= 0.9'], ['R0 >= 0.75', 'Y0 >= 0.75'])
-        ts = TaskSampler(task, ['J0 >= 0.9', 'R0 >= 0.9', 'Y0 >= 0.9'], ['J0 >= 0.75', 'R0 >= 0.75', 'Y0 >= 0.75'])
+        sequence = ['J', 'R', 'Y']
+        ts = TaskSampler(task, ['J0 >= 0.9', 'R0 >= 0.9', 'Y0 >= 0.9'], ['J0 >= 0.75', 'R0 >= 0.75', 'Y0 >= 0.75'], sequence)
         robs = []
         truth = []
         stl_cs = []
@@ -280,7 +285,7 @@ class ControllerEvaluator:
             # low = 'eventually[0,401](R0 >= 0.8 and eventually[0,501] (Y0 >= 0.8))'
             # stl =  'eventually[0,4](R0 >= 0.8)'
             # low = 'eventually[0,401](R0 >= 0.8)'
-            distances ,contorls, reward, timesteps, traj, zones_pos, goals, robot_in_zones, stl_c = self.one_epoch_prediction(stl)
+            distances ,contorls, reward, timesteps, traj, zones_pos, goals, robot_in_zones, stl_c, high_level_controls = self.one_epoch_prediction(stl)
             
             tensor_s = torch.tensor(distances)
             tensor_s = tensor_s[None, :, :]
@@ -288,6 +293,7 @@ class ControllerEvaluator:
             
             stl_cs.append(stl_c)
             robs.append(ro[0])
+            print(high_level_controls)
 
             truth.append(find_s1_in_s2(zone_sequence, robot_in_zones))
             print(robot_in_zones)
@@ -344,7 +350,7 @@ def main(stl, stl_env):
         # controller = RandomShootingController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 32768, 100, device)
         # controller = MPController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 16384, 50, device)
         # controller = MCTSController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 16384, 50, device)
-        controller = MPCMCTSController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 10000, 500, device)
+        controller = MPCMCTSController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 10000, 1000, device)
         # controller = RandomShootingController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 32768, 20, device)
         #controller = MPController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 16384, 50, device)
         evaluator = ControllerEvaluator(controller, env)

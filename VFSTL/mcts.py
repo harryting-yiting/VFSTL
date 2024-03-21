@@ -113,6 +113,7 @@ class MonteCarloTreeSearchNode:
     def rollout(self, states_outof_tree):
         # batch N of current_state, T = max_step - cur_step, init_vfs = cur_state
         device = torch.device('cuda')
+        # start_time = datetime.now()
 
         T = self.max_step - self.cur_step
         N = self.batch_size
@@ -140,7 +141,10 @@ class MonteCarloTreeSearchNode:
         # evaluate as a batch
         stl_robs = stl_cost(all_states, self.stl)
 
-        return torch.mean(stl_robs)
+        # end_time = datetime.now()
+        # print('Time Of RollOut Once {}'.format(end_time - start_time))
+
+        return torch.max(stl_robs)
 
     def backpropagate(self, reward):
         self._number_of_visits += 1.
@@ -176,12 +180,16 @@ class MonteCarloTreeSearchNode:
         return current_node
 
     def build_tree(self, iteration, states_outof_tree=None):
+        # start_time = datetime.now()
 
         # for i in tqdm(range(iteration), desc='building tree'):
         for i in range(iteration):
             v = self._tree_policy()
             reward = v.rollout(states_outof_tree)
             v.backpropagate(reward)
+
+        # end_time = datetime.now()
+        # print('Time of Building One Tree: {}'.format(end_time - start_time))
 
     def move(self, action, state):
         device = torch.device('cuda')
@@ -282,6 +290,7 @@ class MPCMCTSController:
         self.current_controls_plans = []
         self.prev_n_in_horizon = 0
         self.pre_values = []
+        self.high_level_controls = []
 
     def setTarget(self, stl:str):
         self.stl = stl
@@ -299,7 +308,8 @@ class MPCMCTSController:
             
             self.pre_values.append(init_values)
             self.current_controls_plans = controls
-        
+            self.high_level_controls.append(self.current_controls_plans[0])
+
         new_n_horizon = math.floor(self.current_timestep / self.timesteps_pre_policy)
         if(self.prev_n_in_horizon != new_n_horizon):
             self.still_process_T -= 1
@@ -311,6 +321,7 @@ class MPCMCTSController:
             # print(controls)
             # print(new_n_horizon)
             self.current_controls_plans = controls
+            self.high_level_controls.append(self.current_controls_plans[0])
             self.pre_values.append(init_values)
             # print(torch.from_numpy(from_real_dict_to_vector(get_all_goal_value(obs, self.NNPolicy.policy, get_zone_vector(), self.device))).to(self.device))
             # print(current_goal_index)
@@ -324,10 +335,10 @@ class MPCMCTSController:
         
         if self.current_timestep > self.horizon * self.timesteps_pre_policy - 1:
             done = True
-            self.reset()
+            
             
         # may need to calculate vfs stl robust
-        return action, done, current_goal_index
+        return action, done, current_goal_index, self.high_level_controls
   
     def reset(self):
         self.stl = None # updated by setTarget
@@ -336,6 +347,7 @@ class MPCMCTSController:
         self.current_controls_plans = []
         self.prev_n_in_horizon = 0
         self.pre_values = []
+        self.high_level_controls = []
     
 class MCTSController:
     def __init__(self, timesteps_pre_policy: int,  nnPolicy: torch.nn.Module, dynamics, goals ,horizon: int, batch_size: int, epoch: int, tree_nodes, device) -> None:
