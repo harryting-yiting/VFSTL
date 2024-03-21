@@ -65,7 +65,7 @@ def stl_cost(states, stl_spec):
         'Y0': Y.T,
         }
         m = spec.evaluate(dataset)
-        m = torch.vstack(m)
+        # m = torch.vstack(m)
         robs = m[0,:]
         return robs
 
@@ -136,7 +136,7 @@ class MonteCarloTreeSearchNode:
             states_outof_tree = states_outof_tree.repeat(N, 1, 1).to(device)
             all_states = torch.cat((states_outof_tree, prev_states, cur_vfs, roll_out_states), 1)
         else:
-            all_states = torch.cat((prev_states, cur_vfs, roll_out_states), 1)
+            all_states = torch.cat((prev_states, cur_vfs, roll_out_states), 1).to(device)
 
         # evaluate as a batch
         stl_robs = stl_cost(all_states, self.stl)

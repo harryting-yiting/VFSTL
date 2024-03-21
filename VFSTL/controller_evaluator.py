@@ -146,6 +146,7 @@ def get_env_ground_truth_robustness_value(stl_env_spec, states: torch.Tensor, zo
     # states: N* T * M, M: the number of zones, for each row and each type we only need the one with samllest value
     # output, robutness value
     # state N* T * M
+    states = states.to(torch.device('cuda'))
     spec = rtamt.StlDiscreteTimeOfflineSpecification()
     spec.declare_var('J0', 'float')
     spec.declare_var('W0', 'float')
@@ -168,7 +169,7 @@ def get_env_ground_truth_robustness_value(stl_env_spec, states: torch.Tensor, zo
     for z_type in zone_types:
         row_index = [ind for ind, ele in enumerate(zones) if ele == z_type]
         tmp = states[:,:, row_index] # N*T*R
-        state_types[z_type] = torch.min(tmp, 2).values # N*T*1
+        state_types[z_type] = torch.min(tmp, 2).values.to(states.device) # N*T*1
 
     J = 1 - state_types[zone.JetBlack] # N * T
     W = 1 - state_types[zone.White]
@@ -177,9 +178,8 @@ def get_env_ground_truth_robustness_value(stl_env_spec, states: torch.Tensor, zo
     
     # print((state_types[zone.Red][0] < 0.2).nonzero(as_tuple=True)[0])
     # print(state_types[zone.Red][0][(state_types[zone.Red][0] < 0.2).nonzero(as_tuple=True)[0]])
-    
     dataset = {
-        'time': torch.tensor([i for i in range(0, J.size()[1])]).repeat((states.size()[0], 1)).T,
+        'time': torch.tensor([i for i in range(0, J.size()[1])]).repeat((states.size()[0], 1)).T.to(states.device),
         'J0': J.T,
         'W0': W.T,
         'R0': R.T,
@@ -377,7 +377,7 @@ def main(stl, stl_env):
         # controller = RandomShootingController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 32768, 100, device)
         # controller = MPController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 16384, 50, device)
         # controller = MCTSController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 16384, 50, device)
-        controller = MPCMCTSController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 10000, 200, device)
+        controller = MPCMCTSController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 10000, 2, device)
         # controller = RandomShootingController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 32768, 20, device)
         #controller = MPController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 16384, 50, device)
         evaluator = ControllerEvaluator(controller, env)

@@ -320,7 +320,7 @@ class StlDiscreteTimeOfflineAstVisitor(StlAstVisitor):
     def visitConstant(self, node, *args, **kwargs):
         length = args[0]
         # return [node.val]*length
-        return th.full((length,), node.val, device=th.device("cuda"))
+        return th.full((length,), node.val, device=th.device("cuda")).view(-1, 1)
 
 
     def visitPrevious(self, node, *args, **kwargs):
