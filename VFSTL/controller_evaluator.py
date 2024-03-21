@@ -14,7 +14,7 @@ import rtamt
 import time
 from random_shooting import RandomShootingController, MPController
 
-from mcts import MCTSController, VFDynamics
+from mcts import MCTSController, VFDynamics, MPCMCTSController
 sys.path.append("/app/vfstl/src/GCRL-LTL/zones")
 from envs import ZoneRandomGoalEnv
 from envs.utils import get_zone_vector
@@ -41,7 +41,8 @@ class TaskSampler:
         aps = copy.copy(self.aps)
         aps_env = copy.copy(self.aps_env)
         indices = np.arange(len(aps))
-        sequence = ['J', 'W', 'R', 'Y']
+        # sequence = ['J', 'W', 'R', 'Y']
+        sequence = ['J', 'R', 'Y']
         
         random.shuffle(indices)
         new_sequence = []
@@ -239,7 +240,7 @@ class ControllerEvaluator:
         robot_in_zones = []
         stl_c = 0
         while not done:
-            action, contoller_done, goal, stl_c = self.controller.predict(obs)
+            action, contoller_done, goal = self.controller.predict(obs)
             obs, reward, env_done, info = self.env.step(action)
             if info['zone']:
                 robot_in_zones.append(info['zone'])
@@ -270,7 +271,7 @@ class ControllerEvaluator:
         #torch.tensor(s, device=device)
         succ = 0
 
-        for i in tqdm(range(experiment_num)):
+        for i in tqdm(range(experiment_num), desc='running experiment'):
             stl, low, zone_sequence= ts.sample()
             print(stl)
             print(low)
@@ -290,6 +291,7 @@ class ControllerEvaluator:
 
             truth.append(find_s1_in_s2(zone_sequence, robot_in_zones))
             print(robot_in_zones)
+          
             print(ro[0])
 
             # if ro[0][0] >= 0:
@@ -301,7 +303,7 @@ class ControllerEvaluator:
                 plot_traj_2d(self.env, np.array(traj), np.array(goals), '{}_traj_{}'.format(exp_name, low))
 
         
-        return robs, stl_cs
+        return robs, stl_cs, truth
         
         
 
@@ -341,7 +343,8 @@ def main(stl, stl_env):
         
         # controller = RandomShootingController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 32768, 100, device)
         # controller = MPController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 16384, 50, device)
-        controller = MCTSController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 16384, 50, device)
+        # controller = MCTSController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 16384, 50, device)
+        controller = MPCMCTSController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 10000, 500, device)
         # controller = RandomShootingController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 32768, 20, device)
         #controller = MPController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 16384, 50, device)
         evaluator = ControllerEvaluator(controller, env)
@@ -349,15 +352,17 @@ def main(stl, stl_env):
         # tensor_s = torch.tensor(s, device=device)
         # tensor_s = tensor_s[None, :, :]
         # ro = get_env_ground_truth_robustness_value(stl_env, tensor_s, env.zones, env.zone_types)
-        robs, stl_cs = evaluator.random_evaluate('chain', 100 , device)
+        robs, stl_cs, truth = evaluator.random_evaluate('chain', 100 , device)
 
         print('statis ----------------------------------------------------------------------------------------------------')
         print(robs)
         print(stl_cs)
         robs= torch.stack(robs)
-        stl_cs = torch.stack(stl_cs)
+        print(f'Total Success in Zone Seq: {sum(truth)}')
+        # stl_cs = torch.stack(stl_cs)
         path = '/app/vfstl/src/VFSTL/controller_evaluation_result/{}.pt'
-        torch.save(stl_cs, path.format('vf_estimated'))
+        # torch.save(stl_cs, path.format('vf_estimated'))
+        torch.save(truth, path.format('zone_truth'))
         torch.save(robs, path.format('ground_truth'))
         # robs = torch.stack(robs)
         # print(robs[robs > 0].size())
@@ -378,5 +383,5 @@ if __name__ == "__main__":
     # #stl_spec = 'not ((J0 > 0.8) or (R0 > 0.8) or (Y0 > 0.8)) until[0, 3] ((W0 > 0.8) and ((not ((J0 > 0.8) or (R0 > 0.8) or (W0 > 0.8))) until[0, 3] (Y0 > 0.8)))'
     main(stl_spec, stl_spec_env)
     #est_task_simpler()
-    print(find_s1_in_s2(['a', 'b'], ['a', 'c', 'a', 'a', 'b', 'd','b']))
+    # print(find_s1_in_s2(['a', 'b'], ['a', 'c', 'a', 'a', 'b', 'd','b']))
 
