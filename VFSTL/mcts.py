@@ -161,7 +161,7 @@ class MonteCarloTreeSearchNode:
 
     def best_child(self, c_param=0.1):
 
-        choices_weights = torch.tensor( [(c.score / c.n()) + c_param * np.sqrt((2 * np.log(self.n()) / c.n())) for c in self.children], device=self.device)
+        choices_weights = torch.tensor( [(c.score / c.n()) + np.sqrt((2 * np.log(self.n()) / c.n())) for c in self.children], device=self.device)
         return self.children[torch.argmax(choices_weights)]
 
     def rollout_policy(self, possible_moves):
