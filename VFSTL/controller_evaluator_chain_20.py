@@ -369,10 +369,10 @@ def main(stl, stl_env):
         T_horizon = 47
         skill_timesteps = 20
         number_of_expriments = 10
-        random_search_nodes_for_each_batch = 100_000
-        mcts_tree_nodes = 500
+        random_search_nodes_for_each_batch = 10_000
+        mcts_tree_nodes = 300
         task = 'chain'
-        exp_name = 'chian_{}_steps'.format(skill_timesteps)
+        exp_name = 'chian_{}_mpc_skip_steps'.format(skill_timesteps)
         
         return {'horizon': T_horizon, 
                 'skill_steps': skill_timesteps, 
