@@ -283,7 +283,7 @@ class MPCMCTSController:
         self.dynamics = dynamics
         self.goals = goals
         self.tree_nodes = tree_nodes
-
+        
         # updated
         self.stl = None # updated by setTarget
         self.current_timestep = 0
@@ -291,54 +291,117 @@ class MPCMCTSController:
         self.prev_n_in_horizon = 0
         self.pre_values = []
         self.high_level_controls = []
-
+        self.remenber_2_steps = 0
+        
     def setTarget(self, stl:str):
         self.stl = stl
         self.still_process_T = self.horizon
-
+        
+    
     def predict(self, obs):
         done = False
-
-        if self.current_timestep == 0:
+        
+        if (self.current_timestep == 0) or (self.current_timestep % (2*self.timesteps_pre_policy) == 0):
             init_values = torch.from_numpy(from_real_dict_to_vector(get_all_goal_value(obs, self.NNPolicy.policy, get_zone_vector(), self.device))).to(self.device)
             # controls, states, cost = self.op.optimize(self.epoch, self.batch_size, False, init_values, self.device)
             root = MonteCarloTreeSearchNode(init_values, self.dynamics, self.still_process_T, self.stl, self.batch_size)
             root.build_tree(self.tree_nodes)
+            print(f'{self.current_timestep} + predicting')
             controls, states, scores = best_action_sequence(root)
             
+            self.still_process_T -= 1
             self.pre_values.append(init_values)
             self.current_controls_plans = controls
             self.high_level_controls.append(self.current_controls_plans[0])
-
-        new_n_horizon = math.floor(self.current_timestep / self.timesteps_pre_policy)
-        if(self.prev_n_in_horizon != new_n_horizon):
-            self.still_process_T -= 1
+            
+        elif (self.current_timestep % self.timesteps_pre_policy) == 0:
             init_values = torch.from_numpy(from_real_dict_to_vector(get_all_goal_value(obs, self.NNPolicy.policy, get_zone_vector(), self.device))).to(self.device)
-            root = MonteCarloTreeSearchNode(init_values, self.dynamics, self.still_process_T, self.stl, self.batch_size)
+            # root = MonteCarloTreeSearchNode(init_values, self.dynamics, self.still_process_T, self.stl, self.batch_size)
 
-            root.build_tree(self.tree_nodes, torch.stack(self.pre_values).to(self.device))
-            controls, states, scores = best_action_sequence(root)
+            # root.build_tree(self.tree_nodes, torch.stack(self.pre_values).to(self.device))
+            # controls, states, scores = best_action_sequence(root)
             # print(controls)
             # print(new_n_horizon)
-            self.current_controls_plans = controls
-            self.high_level_controls.append(self.current_controls_plans[0])
+            self.high_level_controls.append(self.current_controls_plans[1])
             self.pre_values.append(init_values)
-            # print(torch.from_numpy(from_real_dict_to_vector(get_all_goal_value(obs, self.NNPolicy.policy, get_zone_vector(), self.device))).to(self.device))
-            # print(current_goal_index)
-        
-        current_goal_index = self.current_controls_plans[0]
+            print(f'{self.current_timestep} + Next_step La')
+            
+        current_goal_index = self.high_level_controls[-1]
         obs = np.concatenate((obs[:-ZONE_OBS_DIM], self.zone_vector[self.goals[current_goal_index]]))
         action, _ = self.NNPolicy.predict(obs, deterministic=True)
         
         self.current_timestep += 1
-        self.prev_n_in_horizon = new_n_horizon
+        # self.prev_n_in_horizon = new_n_horizon
         
         if self.current_timestep > self.horizon * self.timesteps_pre_policy - 1:
             done = True
             
-            
         # may need to calculate vfs stl robust
         return action, done, current_goal_index, self.high_level_controls, self.pre_values
+    
+
+    # def predict(self, obs):
+    #     done = False
+
+    #     if self.current_timestep == 0:
+    #         init_values = torch.from_numpy(from_real_dict_to_vector(get_all_goal_value(obs, self.NNPolicy.policy, get_zone_vector(), self.device))).to(self.device)
+    #         # controls, states, cost = self.op.optimize(self.epoch, self.batch_size, False, init_values, self.device)
+    #         root = MonteCarloTreeSearchNode(init_values, self.dynamics, self.still_process_T, self.stl, self.batch_size)
+    #         root.build_tree(self.tree_nodes)
+    #         controls, states, scores = best_action_sequence(root)
+            
+    #         self.pre_values.append(init_values)
+    #         self.current_controls_plans = controls
+    #         self.high_level_controls.append(self.current_controls_plans[0])
+
+    #     new_n_horizon = math.floor(self.current_timestep / self.timesteps_pre_policy)
+        
+        
+    #     if(self.remenber_2_steps > 1 and max(self.still_process_T, 0) > 0):
+    #         self.still_process_T = max(self.still_process_T, 0)
+    #         init_values = torch.from_numpy(from_real_dict_to_vector(get_all_goal_value(obs, self.NNPolicy.policy, get_zone_vector(), self.device))).to(self.device)
+    #         root = MonteCarloTreeSearchNode(init_values, self.dynamics, self.still_process_T, self.stl, self.batch_size)
+
+    #         root.build_tree(self.tree_nodes, torch.stack(self.pre_values).to(self.device))
+    #         controls, states, scores = best_action_sequence(root)
+    #         self.current_controls_plans = controls
+    #         self.remenber_2_steps = 0
+    #         print('predicting')
+
+            
+    #     if(self.prev_n_in_horizon != new_n_horizon):
+    #         self.remenber_2_steps+=1
+    #         self.still_process_T -= 1
+            
+    #         init_values = torch.from_numpy(from_real_dict_to_vector(get_all_goal_value(obs, self.NNPolicy.policy, get_zone_vector(), self.device))).to(self.device)
+    #         # root = MonteCarloTreeSearchNode(init_values, self.dynamics, self.still_process_T, self.stl, self.batch_size)
+
+    #         # root.build_tree(self.tree_nodes, torch.stack(self.pre_values).to(self.device))
+    #         # controls, states, scores = best_action_sequence(root)
+    #         # print(controls)
+    #         # print(new_n_horizon)
+    #         self.high_level_controls.append(self.current_controls_plans[new_n_horizon % 2])
+    #         self.pre_values.append(init_values)
+    #         # print(torch.from_numpy(from_real_dict_to_vector(get_all_goal_value(obs, self.NNPolicy.policy, get_zone_vector(), self.device))).to(self.device))
+    #         # print(current_goal_index)
+    #         print('Next_step La')
+        
+        
+
+            
+    #     current_goal_index = self.current_controls_plans[new_n_horizon % 2]
+    #     obs = np.concatenate((obs[:-ZONE_OBS_DIM], self.zone_vector[self.goals[current_goal_index]]))
+    #     action, _ = self.NNPolicy.predict(obs, deterministic=True)
+        
+    #     self.current_timestep += 1
+    #     self.prev_n_in_horizon = new_n_horizon
+        
+    #     if self.current_timestep > self.horizon * self.timesteps_pre_policy - 1:
+    #         done = True
+            
+            
+    #     # may need to calculate vfs stl robust
+    #     return action, done, current_goal_index, self.high_level_controls, self.pre_values
   
     def reset(self):
         self.stl = None # updated by setTarget
@@ -348,6 +411,7 @@ class MPCMCTSController:
         self.prev_n_in_horizon = 0
         self.pre_values = []
         self.high_level_controls = []
+        self.remenber_2_steps = 0
     
 class MCTSController:
     def __init__(self, timesteps_pre_policy: int,  nnPolicy: torch.nn.Module, dynamics, goals ,horizon: int, batch_size: int, epoch: int, tree_nodes, device) -> None:
@@ -384,7 +448,6 @@ class MCTSController:
             print(f'{self.stl_c}-------------------------------------------------')
             print(controls)
             print(states)
-            
             # print(scores)
             self.current_controls_plans = controls
 
