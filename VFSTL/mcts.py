@@ -412,56 +412,56 @@ class MCTSController:
         self.prev_n_in_horizon = 0
         self.stl_c = 0
 
-# def test_mcts_controller(stl_spec:str):
-#     # Check if CUDA is available
-#     # if torch.cuda.is_available():
-#     #     device = torch.device("cuda:0")
-#     #     print("CUDA is available. Training on GPU.")
-#     # else:
-#     device = torch.device("cpu")
-#     # print("CUDA is not available. Training on CPU.")
+def test_mcts_controller(stl_spec:str):
+    # Check if CUDA is available
+    # if torch.cuda.is_available():
+    #     device = torch.device("cuda:0")
+    #     print("CUDA is available. Training on GPU.")
+    # else:
+    device = torch.device("cpu")
+    # print("CUDA is not available. Training on CPU.")
 
     
-#     model_path = '/app/vfstl/src/GCRL-LTL/zones/models/goal-conditioned/best_model_ppo_8'
-#     policy_model = PPO.load(model_path, device=device)
-#     timeout = 10000
-#     env = ZoneRandomGoalEnv(
-#         env=gym.make('Zones-8-v0', timeout=timeout), 
-#         primitives_path='/app/vfstl/src/GCRL-LTL/zones/models/primitives', 
-#         goals_representation=get_zone_vector(),
-#         use_primitves=True,
-#         rewards=[0, 1],
-#         device=device,
-#     )
+    model_path = '/app/vfstl/src/GCRL-LTL/zones/models/goal-conditioned/best_model_ppo_8'
+    policy_model = PPO.load(model_path, device=device)
+    timeout = 10000
+    env = ZoneRandomGoalEnv(
+        env=gym.make('Zones-8-v0', timeout=timeout), 
+        primitives_path='/app/vfstl/src/GCRL-LTL/zones/models/primitives', 
+        goals_representation=get_zone_vector(),
+        use_primitves=True,
+        rewards=[0, 1],
+        device=device,
+    )
     
-#     vf_num = 4
-#     T_horizon = 24
-#     skill_timesteps = 100
+    vf_num = 4
+    T_horizon = 24
+    skill_timesteps = 100
     
 
-#     # model = VFDynamicsMLP(vf_num).to(device=device)
-#     # model.load_state_dict(torch.load('/app/vfstl/src/VFSTL/dynamic_models/test_model_20240307_085639_11', map_location=device))
-#     # dynamic = VFDynamics(model, vf_num)
+    # model = VFDynamicsMLP(vf_num).to(device=device)
+    # model.load_state_dict(torch.load('/app/vfstl/src/VFSTL/dynamic_models/test_model_20240307_085639_11', map_location=device))
+    # dynamic = VFDynamics(model, vf_num)
 
-#     model = VFDynamicsMLPLegacy(vf_num).to(device=device)
-#     model.load_state_dict(torch.load("/app/vfstl/src/VFSTL/dynamic_models/test_model_20240307_085639_11", map_location=device))
-#     dynamics = VFDynamics(model.to(device), vf_num)
+    model = VFDynamicsMLPLegacy(vf_num).to(device=device)
+    model.load_state_dict(torch.load("/app/vfstl/src/VFSTL/dynamic_models/test_model_20240307_085639_11", map_location=device))
+    dynamics = VFDynamics(model.to(device), vf_num)
     
     
-#     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-#     env.metadata['render.modes'] = ['rgb_array']
-#     video_rec = VR.VideoRecorder(env, path = "./test_{}_{}.mp4".format(stl_spec, timestamp))
-#     controller = MCTSController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 65536, 100, device)
-#     controller.setTarget(stl_spec)
-#     obs = env.reset()
-#     done = False
-#     while not done:
-#         action, controller_done, _ = controller.predict(obs)
-#         obs, reward, eval_done, info = env.step(action)
-#         done = controller_done
-#         video_rec.capture_frame()
-#     video_rec.close()
-#     env.close()
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    env.metadata['render.modes'] = ['rgb_array']
+    video_rec = VR.VideoRecorder(env, path = "./test_{}_{}.mp4".format(stl_spec, timestamp))
+    controller = MCTSController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 65536, 100, device)
+    controller.setTarget(stl_spec)
+    obs = env.reset()
+    done = False
+    while not done:
+        action, controller_done, _ = controller.predict(obs)
+        obs, reward, eval_done, info = env.step(action)
+        done = controller_done
+        video_rec.capture_frame()
+    video_rec.close()
+    env.close()
 
 # if __name__ == '__main__':
     # stl_spec = 'eventually[0,4](W0 >= 0.8 and eventually[0,5] (J0 >= 0.8))'
