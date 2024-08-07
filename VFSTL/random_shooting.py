@@ -1,4 +1,5 @@
 import numpy as np
+import json
 import torch
 import torch.nn as nn
 from datetime import datetime
@@ -14,10 +15,37 @@ import time
 #from gym.wrappers import RecordVideo
 from gym.wrappers.monitor import video_recorder as VR
 import math
+from stl_core_lib import *
 sys.path.append("/app/vfstl/src/GCRL-LTL/zones")
 from envs import ZoneRandomGoalEnv
 from envs.utils import get_zone_vector
 from rl.traj_buffer import TrajectoryBufferDataset
+
+def get_stl_cost_function(stl_spec: str):
+
+    def stl_cost_fn(states):
+
+        J = states[:,:, 0]
+        W = states[:,:, 1]
+        R = states[:,:, 2]
+        Y = states[:,:, 3]
+
+        nt = J.size()[1]
+        batch_size = states.size()[0]
+
+        # reach Y -> reach R 
+        Reach1 = Eventually(0, nt//2, AP(lambda x: x[..., 3] - 0.8, comment="REACH YELLOW"))
+        Reach2 = Eventually(nt//2, nt, AP(lambda x: x[..., 2] - 0.8, comment="REACH RED"))
+        stl = ListAnd([Reach1, Reach2])
+        
+        # print(stl)
+        stl.update_format("word")
+        # print(stl)
+        robs = stl(states, 100, d={"hard":True})[..., 0]
+
+        return robs * -1
+    return stl_cost_fn
+
 
 class RandomShootingOptimization():
 
@@ -55,48 +83,73 @@ class RandomShootingOptimization():
 
 
 def get_stl_cost_function(stl_spec: str):
-    
+
+
     def stl_cost_fn(states):
-        # state N* T+1(the one is the initail state) * M
-        spec = rtamt.StlDiscreteTimeOfflineSpecification()
-        spec.declare_var('J0', 'float')
-        spec.declare_var('W0', 'float')
-        spec.declare_var('R0', 'float')
-        spec.declare_var('Y0', 'float')
-        #spec.spec = 'eventually[0,2]((J0 >= 0.8) and eventually[0,2](W0 >= 0.8))'
-        #spec.spec = 'not ((J0 > 0.8) or (R0 > 0.8) or (Y0 > 0.8)) until[0, 3] ((W0 > 0.8) and ((not ((J0 > 0.8) or (R0 > 0.8) or (W0 > 0.8))) until[0, 3] (Y0 > 0.8)))'
-        #spec.spec = 'eventually[0,10](W0 >= 0.8)'
-        spec.spec = stl_spec
-        try:
-            spec.parse()
-            #spec.pastify()
-        except rtamt.RTAMTException as err:
-            print('RTAMT Exception: {}'.format(err))
-            sys.exit()
 
         J = states[:,:, 0]
         W = states[:,:, 1]
         R = states[:,:, 2]
         Y = states[:,:, 3]
 
-        horizon = J.size()[1]
+        nt = J.size()[1]
         batch_size = states.size()[0]
-        # tiemar = torch.tensor([i for i in range(0, J.size()[1])]).repeat((states.size()[0], 1)).T.to(device=states.device)
-        s = time.time()
-        timer = torch.arange(0, horizon, device=states.device).repeat((batch_size, 1))#.to(device=states.device)
-        e = time.time()
-        print('generating time: {}'.format(e-s))
-        dataset = {
-        'time':  timer,
-        'J0': J.T,
-        'W0': W.T,
-        'R0': R.T,
-        'Y0': Y.T,
-        }
-        m = spec.evaluate(dataset)
-        # m = torch.vstack(m)
-        robs = m[0,:]
+
+        # reach Y -> reach R 
+        Reach1 = Eventually(0, nt//2, AP(lambda x: x[..., 3] - 0.8, comment="REACH YELLOW"))
+        Reach2 = Eventually(nt//2, nt, AP(lambda x: x[..., 2] - 0.8, comment="REACH RED"))
+        stl = ListAnd([Reach1, Reach2])
+        
+        # print(stl)
+        stl.update_format("word")
+        # print(stl)
+        robs = stl(states, 100, d={"hard":True})[..., 0]
+
         return robs * -1
+
+
+
+    # def stl_cost_fn(states):
+    #     # state N* T+1(the one is the initail state) * M
+    #     spec = rtamt.StlDiscreteTimeOfflineSpecification()
+    #     spec.declare_var('J0', 'float')
+    #     spec.declare_var('W0', 'float')
+    #     spec.declare_var('R0', 'float')
+    #     spec.declare_var('Y0', 'float')
+    #     #spec.spec = 'eventually[0,2]((J0 >= 0.8) and eventually[0,2](W0 >= 0.8))'
+    #     #spec.spec = 'not ((J0 > 0.8) or (R0 > 0.8) or (Y0 > 0.8)) until[0, 3] ((W0 > 0.8) and ((not ((J0 > 0.8) or (R0 > 0.8) or (W0 > 0.8))) until[0, 3] (Y0 > 0.8)))'
+    #     #spec.spec = 'eventually[0,10](W0 >= 0.8)'
+    #     spec.spec = stl_spec
+    #     try:
+    #         spec.parse()
+    #         #spec.pastify()
+    #     except rtamt.RTAMTException as err:
+    #         print('RTAMT Exception: {}'.format(err))
+    #         sys.exit()
+
+    #     J = states[:,:, 0]
+    #     W = states[:,:, 1]
+    #     R = states[:,:, 2]
+    #     Y = states[:,:, 3]
+
+    #     horizon = J.size()[1]
+    #     batch_size = states.size()[0]
+    #     # tiemar = torch.tensor([i for i in range(0, J.size()[1])]).repeat((states.size()[0], 1)).T.to(device=states.device)
+    #     s = time.time()
+    #     timer = torch.arange(0, horizon, device=states.device).repeat((batch_size, 1))#.to(device=states.device)
+    #     e = time.time()
+    #     print('generating time: {}'.format(e-s))
+    #     dataset = {
+    #     'time':  timer,
+    #     'J0': J.T,
+    #     'W0': W.T,
+    #     'R0': R.T,
+    #     'Y0': Y.T,
+    #     }
+    #     m = spec.evaluate(dataset)
+    #     # m = torch.vstack(m)
+    #     robs = m[0,:]
+    #     return robs * -1
     
     return stl_cost_fn
     
@@ -121,7 +174,7 @@ def test_random_shooting():
     timeout = 10000
     env = ZoneRandomGoalEnv(
         env=gym.make('Zones-8-v0', timeout=timeout), 
-        primitives_path='/app/vfstl/src/GCRL-LTL/zones/models/primitives', 
+        primitives_path='/app/vfstl/src/GCRL-LTL/zones/models/primitives',
         goals_representation=get_zone_vector(),
         use_primitves=True,
         rewards=[0, 1],
@@ -210,15 +263,15 @@ class RandomShootingController():
             # print(states)
             print("cost")
             print(cost)
+
+            with open('./test_random', 'w') as f:
+                json.dump(controls.tolist(), f)
         
         new_n_horizon = math.floor(self.current_timestep / self.timesteps_pre_policy)
         current_goal_index = self.current_controls_plans[new_n_horizon]
         obs = np.concatenate((obs[:-ZONE_OBS_DIM], self.zone_vector[self.goals[current_goal_index]]))
         action, _ = self.NNPolicy.predict(obs, deterministic=True)
         
-        # if(self.prev_n_in_horizon != new_n_horizon or self.current_timestep == 0):
-        #     print(torch.from_numpy(from_real_dict_to_vector(get_all_goal_value(obs, self.NNPolicy.policy, get_zone_vector(), self.device))).to(self.device))
-        #     print(current_goal_index)
         # update class data
         self.current_timestep += 1
         self.prev_n_in_horizon = new_n_horizon
@@ -328,7 +381,7 @@ def test_random_shooting_controller(stl_spec:str):
     policy_model = PPO.load(model_path, device=device)
     timeout = 10000
     env = ZoneRandomGoalEnv(
-        env=gym.make('Zones-8-v0', timeout=timeout), 
+        env=gym.make('Zones-8-v1', timeout=timeout, map_seed=123), 
         primitives_path='/app/vfstl/src/GCRL-LTL/zones/models/primitives', 
         goals_representation=get_zone_vector(),
         use_primitves=True,
@@ -347,13 +400,14 @@ def test_random_shooting_controller(stl_spec:str):
     
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     env.metadata['render.modes'] = ['rgb_array']
-    video_rec = VR.VideoRecorder(env, path = "./test_{}_{}.mp4".format(stl_spec, timestamp))
-    controller = RandomShootingController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 65536, 100, device)
+    # video_rec = VR.VideoRecorder(env, path = "./test_{}_{}.mp4".format(stl_spec, timestamp))
+    video_rec = VR.VideoRecorder(env, path = "./test_random.mp4")
+    controller = RandomShootingController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 60000, 100, device)
     controller.setTarget(stl_spec)
     obs = env.reset()
     done = False
     while not done:
-        action, controller_done = controller.predict(obs)
+        action, controller_done, _ = controller.predict(obs)
         obs, reward, eval_done, info = env.step(action)
         done = controller_done
         video_rec.capture_frame()
