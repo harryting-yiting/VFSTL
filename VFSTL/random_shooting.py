@@ -21,31 +21,6 @@ from envs import ZoneRandomGoalEnv
 from envs.utils import get_zone_vector
 from rl.traj_buffer import TrajectoryBufferDataset
 
-def get_stl_cost_function(stl_spec: str):
-
-    def stl_cost_fn(states):
-
-        J = states[:,:, 0]
-        W = states[:,:, 1]
-        R = states[:,:, 2]
-        Y = states[:,:, 3]
-
-        nt = J.size()[1]
-        batch_size = states.size()[0]
-
-        # reach Y -> reach R 
-        Reach1 = Eventually(0, nt//2, AP(lambda x: x[..., 3] - 0.8, comment="REACH YELLOW"))
-        Reach2 = Eventually(nt//2, nt, AP(lambda x: x[..., 2] - 0.8, comment="REACH RED"))
-        stl = ListAnd([Reach1, Reach2])
-        
-        # print(stl)
-        stl.update_format("word")
-        # print(stl)
-        robs = stl(states, 100, d={"hard":True})[..., 0]
-
-        return robs * -1
-    return stl_cost_fn
-
 
 class RandomShootingOptimization():
 
@@ -96,13 +71,18 @@ def get_stl_cost_function(stl_spec: str):
         batch_size = states.size()[0]
 
         # reach Y -> reach R 
-        Reach1 = Eventually(0, nt//2, AP(lambda x: x[..., 3] - 0.8, comment="REACH YELLOW"))
-        Reach2 = Eventually(nt//2, nt, AP(lambda x: x[..., 2] - 0.8, comment="REACH RED"))
-        stl = ListAnd([Reach1, Reach2])
+        # Reach1 = Eventually(0, nt//2, AP(lambda x: x[..., 3] - 0.8, comment="REACH YELLOW"))
+        # Reach2 = Eventually(nt//2, nt, AP(lambda x: x[..., 2] - 0.8, comment="REACH RED"))
+        # stl = ListAnd([Reach1, Reach2])
         
+        reach = Always(0, nt, AP(lambda x: x[..., 0] - 0.9, comment="STAY BLACK"))
+        avoid = Always(0, nt, AP(lambda x: 0.6 - x[..., 1], comment="AVOID WHITE"))
+        stl = ListAnd([reach, avoid])
+
         # print(stl)
         stl.update_format("word")
         # print(stl)
+        exp_info['STL task'] = str(stl)
         robs = stl(states, 100, d={"hard":True})[..., 0]
 
         return robs * -1
@@ -256,7 +236,16 @@ class RandomShootingController():
         
         if self.current_timestep == 0:
             init_values = torch.from_numpy(from_real_dict_to_vector(get_all_goal_value(obs, self.NNPolicy.policy, get_zone_vector(), self.device))).to(self.device)
+            
+            start_time = time.time()
             controls, states, cost = self.op.optimize(self.epoch, self.batch_size, False, init_values, self.device)
+            end_time = time.time()
+            execution_time = end_time - start_time
+            
+            exp_info['controls'] = controls.tolist()
+            exp_info['cost'] = cost.item() * -1
+            exp_info['optimizing time'] = execution_time
+            
             self.current_controls_plans = controls
             print(controls)
             # print(init_values)
@@ -381,7 +370,7 @@ def test_random_shooting_controller(stl_spec:str):
     policy_model = PPO.load(model_path, device=device)
     timeout = 10000
     env = ZoneRandomGoalEnv(
-        env=gym.make('Zones-8-v1', timeout=timeout, map_seed=123), 
+        env=gym.make('Zones-8-v1', timeout=timeout, map_seed=seed), 
         primitives_path='/app/vfstl/src/GCRL-LTL/zones/models/primitives', 
         goals_representation=get_zone_vector(),
         use_primitves=True,
@@ -401,7 +390,7 @@ def test_random_shooting_controller(stl_spec:str):
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     env.metadata['render.modes'] = ['rgb_array']
     # video_rec = VR.VideoRecorder(env, path = "./test_{}_{}.mp4".format(stl_spec, timestamp))
-    video_rec = VR.VideoRecorder(env, path = "./test_random.mp4")
+    video_rec = VR.VideoRecorder(env, path = f"./{file_name}.mp4")
     controller = RandomShootingController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 60000, 100, device)
     controller.setTarget(stl_spec)
     obs = env.reset()
@@ -418,6 +407,20 @@ def test_random_shooting_controller(stl_spec:str):
 if __name__ == "__main__":
     #stl_spec = 'not ((J0 > 0.8) or (R0 > 0.8) or (Y0 > 0.8)) until[0, 3] ((W0 > 0.8) and ((not ((J0 > 0.8) or (R0 > 0.8) or (W0 > 0.8))) until[0, 3] (Y0 > 0.8)))'
     stl_spec =  'eventually[0,4](R0 >= 0.8 and eventually[0,5] (Y0 >= 0.8))'
+    seed = 111
+    torch.manual_seed(seed)
+    current_time = datetime.now()
+    formatted_time = current_time.strftime("%Y-%m-%d_%H-%M-%S")
+    file_name = f'rs_{formatted_time}'
+    exp_info = {
+        'method': 'randomshooting', 
+        'random seed': str(seed)
+    }
+
     test_random_shooting_controller(stl_spec=stl_spec)
+
+    with open(f'{file_name}.json', 'w') as f:
+        json.dump(exp_info, f)
+    
     #test_random_shooting()
     
