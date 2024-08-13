@@ -189,7 +189,7 @@ class VFDynamics():
         self.size_discrete_actions = size_discrete_actions
 
     def one_step_simulation(self, controls, vfs) -> None:
-        # controls: R N should a vector of RN for parallel prediction of multiple trajectories
+        # controls: R*N should a vector of RN for parallel prediction of multiple trajectories
         # vfs: a array of R N*M, with N is the number of samples and M is equal to the total amount of skills
         
         # one_hot to controls

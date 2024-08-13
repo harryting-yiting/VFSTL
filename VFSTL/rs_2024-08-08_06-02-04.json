@@ -1,0 +1,1 @@
+{"method": "randomshooting", "random seed": "111", "STL task": "AND {|ALWAYS[0:12] (STAY BLACK)|,|ALWAYS[0:12] (AVOID WHITE)|}", "controls": [1, 0, 0, 2, 0, 2, 2, 1, 1, 0], "cost": -0.4025899708271027, "optimizing time": 21.265674114227295}

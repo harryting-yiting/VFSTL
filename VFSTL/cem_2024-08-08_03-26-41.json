@@ -1,0 +1,1 @@
+{"method": "cem", "random seed": "123", "STL task": "AND {|EVENTUALLY[0:6] (REACH YELLOW)|,|EVENTUALLY[5:11] (REACH RED)|}", "controls": [3, 3, 3, 3, 3, 2, 2, 3, 2, 2], "cost": 0.14790016412734985, "optimizing time": 10.025418519973755}
