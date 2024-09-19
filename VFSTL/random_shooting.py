@@ -71,13 +71,13 @@ def get_stl_cost_function(stl_spec: str):
         batch_size = states.size()[0]
 
         # reach Y -> reach R 
-        # Reach1 = Eventually(0, nt//2, AP(lambda x: x[..., 3] - 0.8, comment="REACH YELLOW"))
-        # Reach2 = Eventually(nt//2, nt, AP(lambda x: x[..., 2] - 0.8, comment="REACH RED"))
-        # stl = ListAnd([Reach1, Reach2])
+        Reach1 = Eventually(0, nt//2, AP(lambda x: x[..., 3] - 0.8, comment="REACH YELLOW"))
+        Reach2 = Eventually(nt//2, nt, AP(lambda x: x[..., 2] - 0.8, comment="REACH RED"))
+        stl = ListAnd([Reach1, Reach2])
         
-        reach = Always(0, nt, AP(lambda x: x[..., 0] - 0.9, comment="STAY BLACK"))
-        avoid = Always(0, nt, AP(lambda x: 0.6 - x[..., 1], comment="AVOID WHITE"))
-        stl = ListAnd([reach, avoid])
+        # reach = Always(0, nt, AP(lambda x: x[..., 0] - 0.9, comment="STAY BLACK"))
+        # avoid = Always(0, nt, AP(lambda x: 0.6 - x[..., 1], comment="AVOID WHITE"))
+        # stl = ListAnd([reach, avoid])
 
         # print(stl)
         stl.update_format("word")
@@ -407,7 +407,7 @@ def test_random_shooting_controller(stl_spec:str):
 if __name__ == "__main__":
     #stl_spec = 'not ((J0 > 0.8) or (R0 > 0.8) or (Y0 > 0.8)) until[0, 3] ((W0 > 0.8) and ((not ((J0 > 0.8) or (R0 > 0.8) or (W0 > 0.8))) until[0, 3] (Y0 > 0.8)))'
     stl_spec =  'eventually[0,4](R0 >= 0.8 and eventually[0,5] (Y0 >= 0.8))'
-    seed = 111
+    seed = 123
     torch.manual_seed(seed)
     current_time = datetime.now()
     formatted_time = current_time.strftime("%Y-%m-%d_%H-%M-%S")

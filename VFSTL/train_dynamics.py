@@ -69,7 +69,82 @@ class VFDynamicsMLPWithDropout(nn.Module):
     def predict(self, x):
         with torch.no_grad():
             return self.model(x)
+        
+def get_index_from_multidiensional_one_hot(multidimensional_one_hot):
+    ## one_hot_state: M*N, M is the number of dimension,  N is the number of discrete states
+    ## the total number of states is N^M
+    ## return the index of the one_hot_state in the range of N^M
+    ## multidimensional_one_hot is a one_hot encoding of a multi-dimensional discrete state
+    # Get the dimensions of the multidimensional one-hot tensor
+    M, N = multidimensional_one_hot.shape
+    
+    # Convert the one-hot encoding to indices for each dimension
+    indices = torch.argmax(multidimensional_one_hot, dim=1)
+    
+    # Calculate the index in the flattened space
+    index = 0
+    for i in range(M):
+        index += indices[i] * (N ** (M - i - 1))
+    
+    return index
 
+def get_multidimensional_one_hot_from_index(index, num_discrete_states, num_dimensions):
+    ## index is the index in the range of N^M
+    ## num_discrete_states is the number of discrete states for each dimension
+    ## return a one_hot encoding of the index in the range of N^M
+    
+    # Calculate the indices for each dimension
+    indices = []
+    for i in range(num_dimensions):
+        indices.append(index % num_discrete_states)
+        index //= num_discrete_states
+    
+    # Create the one-hot encoding
+    one_hot = torch.zeros(num_dimensions, num_discrete_states)
+    for dim, idx in enumerate(reversed(indices)):
+        one_hot[dim, idx] = 1
+    
+    return one_hot
+
+def get_one_hot_from_multidimensional_index(index, num_discrete_states, num_dimensions):
+    # Calculate the total number of possible states
+    total_states = num_discrete_states ** num_dimensions
+    
+    # Initialize the one-hot tensor as a one-dimensional array
+    one_hot = torch.zeros(total_states)
+    
+    # Set the corresponding index to 1
+    one_hot[index] = 1
+    
+    return one_hot
+
+class DiscreteVFDynamicsMLP(nn.Module):
+    def __init__(self, num_discrete_states, num_discrete_actions, ) -> None:
+        super().__init__()
+        self.num_discrete_states = num_discrete_states
+        self.num_discrete_actions = num_discrete_actions
+        self.output_size = num_discrete_states ** num_discrete_actions
+        # input : [action, state], state is an index
+        # output: probabilities for each possible multi-dimensional state
+        self.model = nn.Sequential(
+            nn.Linear(num_discrete_actions + 1, 1024),  # +1 for the state index
+            nn.ReLU(),
+            nn.Linear(1024, 1024),
+            nn.ReLU(),
+            nn.Linear(1024, 1024),
+            nn.ReLU(),
+            nn.Linear(1024, self.output_size),
+            nn.Softmax(dim=-1)
+        )
+
+    def forward(self, x):
+        return self.model(x)
+    
+    def predict(self, x):
+        with torch.no_grad():
+            probabilities = self.forward(x)
+            return torch.argmax(probabilities, dim=-1)
+        
 class VFDynamicDataset(Dataset):
     def __init__(self, data: np.ndarray, num_vf:int ) -> None:
         self.num_vf = num_vf
@@ -83,8 +158,46 @@ class VFDynamicDataset(Dataset):
     def __getitem__(self, index):
         return torch.concatenate((self.vf_class[index], 
                                   torch.from_numpy(self.v_t[index]))).to(torch.float32), torch.from_numpy(self.v_next_t[index]).to(torch.float32)
+
+
     
+def discrete_state_to_one_hot(states, num_discrete_states):
+    # states: N*M, N is the number of samples, M is the number of value functions
+    # clip vfs to range [-1, 1]
+    states_clipped = torch.clamp(states, -1, 1)
+    # scale vfs to range [0, num_discrete_states-1] and then one_hot encode
+    states_scaled = ((states_clipped + 1) * (num_discrete_states - 1) / 2).to(torch.int64)
+    vfs_one_hot = nn.functional.one_hot(states_scaled, num_classes=num_discrete_states)
     
+    return vfs_one_hot
+
+def one_hot_to_one_dimension(one_hot_states):
+    # one_hot_states: N*M*K, N is the number of samples, M is the number of value functions, K is the number of discrete states
+    return one_hot_states.view(one_hot_states.size()[0], -1)
+
+class VFDynamicDatasetDiscrete(Dataset):
+    def __init__(self, data: np.ndarray, num_vf:int, num_discrete_states) -> None:
+        self.num_vf = num_vf
+        self.num_discrete_states = num_discrete_states
+        self.vf_class = nn.functional.one_hot(torch.from_numpy(data[:, 0]).to(torch.int64), num_classes=self.num_vf)
+        self.v_t = data[:, 1:num_vf+1]
+        self.v_next_t = data[:, num_vf+1:2*num_vf+1]
+        # the v_t and v_next_t should be  one_hot encoded
+        self.v_t_one_hot = discrete_state_to_one_hot(torch.from_numpy(self.v_t).float(), self.num_discrete_states)
+        self.v_next_t_one_hot = discrete_state_to_one_hot(torch.from_numpy(self.v_next_t).float(), self.num_discrete_states)
+        
+    def __len__(self):
+        return np.shape(self.v_t)[0]
+    
+    def __getitem__(self, index):
+        vf_class = self.vf_class[index]
+        v_t_index = get_index_from_multidiensional_one_hot(self.v_t_one_hot[index]).float()
+        input_tensor = torch.cat((vf_class, v_t_index.unsqueeze(0)), dim=0).to(torch.float32)
+        
+        v_next_t_index = get_index_from_multidiensional_one_hot(self.v_next_t_one_hot[index])
+        output_tensor = get_one_hot_from_multidimensional_index(v_next_t_index, self.num_discrete_states, self.num_vf).to(torch.float32)
+        
+        return input_tensor, output_tensor
 class VFDynamicTrainer():
     def __init__(self, model:nn.Module, train_loader, val_loader, epochs, model_name, device) -> None:
         self.device = device
@@ -93,10 +206,9 @@ class VFDynamicTrainer():
         self.epochs = epochs
         self.train_loader = train_loader
         self.val_loader = val_loader
-        self.loss_fn = nn.MSELoss()
+        self.loss_fn = nn.CrossEntropyLoss()
         self.optimizer = torch.optim.Adam(self.model.parameters())
 
-    
     def train(self):
 
         def train_one_epoch(epoch_index, tb_writer):
@@ -106,16 +218,34 @@ class VFDynamicTrainer():
             # Here, we use enumerate(training_loader) instead of
             # iter(training_loader) so that we can track the batch
             # index and do some intra-epoch reporting
+            def transform_data_to_discrete_trainning(data):
+                inputs, labels = data
+                # the input is a list of [action, states], we need to transform it to [action, one diemnsional one_hot_states]
+                # the label is a list of states, we need to transform it to one_hot_states
+                
+                
             for i, data in enumerate(self.train_loader):
                 # Every data instance is an input + label pair
+                # inputs: [[action, states_one_hot_one_dimension], [action, states_one_hot_one_dimension], ...]
+                # action: 1*4, states_one_hot_one_dimension : 1*num_discrete_states*num_vf
+                # labels: [states_one_hot_one_dimension, states_one_hot_one_dimension, ...]
                 inputs, labels = data
+                # print('shape of inputs')
+                # print(inputs.shape)
+                # print('shape of labels')
+                # print(labels.shape)
                 inputs, labels = inputs.to(self.device), labels.to(self.device)
                 # Zero your gradients for every batch!
                 self.optimizer.zero_grad()
-
                 # Make predictions for this batch
                 outputs = self.model(inputs)
+                # print(outputs[0])
+                # print('predicted')
+                # print(self.model.predict(inputs))
+                # print(inputs[0])
+                # print(labels[0].argmax())
 
+                
                 # Compute the loss and its gradients
                 loss = self.loss_fn(outputs, labels)
                 loss.backward()
@@ -219,7 +349,52 @@ class VFDynamics():
         
         return vf_prediction
 
+class DiscreteVFDynamics():
 
+    
+    def __init__(self, NNModel, size_discrete_actions, num_discrete_states) -> None:
+        self.NNModel = NNModel
+        self.size_discrete_actions = size_discrete_actions
+        self.num_discrete_states = num_discrete_states
+
+    def one_step_simulation(self, controls, vfs) -> None:
+        # controls: R*N should a vector of RN for parallel prediction of multiple trajectories
+        # vfs: a array of R N*M, with N is the number of samples and M is equal to the total amount of skills
+        
+        # one_hot to controls
+        controls = nn.functional.one_hot(controls.to(torch.int64), num_classes=self.size_discrete_actions)
+
+        # clip vfs to range [-1, 1]
+        vfs_clipped = torch.clamp(vfs, -1, 1)
+        
+        # scale vfs to range [0, num_discrete_states-1] and then one_hot encode
+        vfs_scaled = ((vfs_clipped + 1) * (self.num_discrete_states - 1) / 2).to(torch.int64)
+        vfs_one_hot = nn.functional.one_hot(vfs_scaled, num_classes=self.num_discrete_states)
+
+        # concat control with vfs
+        nn_input = torch.cat((controls, vfs_one_hot), dim=1)
+        print('shape of nn_input')
+        print(nn_input.shape)
+        # feed them into NN and get prediction
+        return self.NNModel(nn_input.to(torch.float32))
+
+    def forward_simulation(self, control_seqs, init_vfs):
+        # control_seqs: R: N * T, N: batch size, T: timesteps
+        # init_vfs: R M, M: number of value functions
+        # return N* T * M, no initial_vfs
+        batch_num = control_seqs.size()[0]
+        timesteps = control_seqs.size()[1]
+        # s_t+1 = NN(st)
+        
+        prev_vfs = init_vfs.repeat((batch_num, 1))
+        vf_prediction = torch.zeros((batch_num, timesteps, init_vfs.size()[0]), device=prev_vfs.device)
+        
+        for i in range(0, timesteps):
+            vfs = self.one_step_simulation(control_seqs[:, i], prev_vfs)
+            prev_vfs = vfs
+            vf_prediction[:,i,:] = vfs
+        
+        return vf_prediction
 
 def combine_load_data(paths):
     data = []
@@ -256,6 +431,43 @@ def create_loading_paths(skipped_steps, timeout, buffer_size, random_goal, max_s
         paths.append(save_path)
     return paths
 
+# def main():
+    # Check if CUDA is available
+    # if torch.cuda.is_available():
+    #     device = torch.device("cuda:1")
+    #     print("CUDA is available. Training on GPU.")
+    # else:
+    #     device = torch.device("cpu")
+    #     print("CUDA is not available. Training on CPU.")
+    # train normal dynamics
+    # dataset_skipped_steps = 100
+    # target_skippped_steps = 100
+    # timeout=1000
+    # buffer_size=40000
+    # random_goal=1
+    # max_surfix=60
+    # epochs = 1000
+    # # n_timesteps_direct
+    # # n_timesteps_difference
+    # model_name='{}_timsteps_direct'.format(target_skippped_steps)
+    # data_paths = create_loading_paths(dataset_skipped_steps, timeout, buffer_size, random_goal, max_surfix)
+    # raw_data = combine_load_data(data_paths)
+    # num_vf = 4
+    # raw_data = pre_process_new_dataset(raw_data,dataset_skipped_steps, target_skippped_steps, num_vf)
+    # np.random.shuffle(raw_data)
+    # vali_dataset_len = int(np.shape(raw_data)[0] * 0.2)
+    # vali_raw_data = raw_data[:vali_dataset_len]
+    # train_raw_data = raw_data[vali_dataset_len:]
+    # print(np.shape(vali_raw_data))
+    # print(np.shape(train_raw_data))
+    # print(np.shape(raw_data))
+    # train_loader = torch.utils.data.DataLoader(VFDynamicDataset(train_raw_data, num_vf), batch_size=1024, shuffle=True)
+    # val_loader = torch.utils.data.DataLoader(VFDynamicDataset(vali_raw_data, num_vf), batch_size=1024, shuffle=True)
+    
+    
+    # dy_model = VFDynamicsMLPWithDropout(num_vf)
+    # trainer = VFDynamicTrainer(dy_model, train_loader, val_loader, epochs, model_name, device)
+    # trainer.train()
 def main():
     # Check if CUDA is available
     if torch.cuda.is_available():
@@ -274,10 +486,14 @@ def main():
     epochs = 1000
     # n_timesteps_direct
     # n_timesteps_difference
-    model_name='{}_timsteps_direct'.format(target_skippped_steps)
+    # n_timesteps means the number of skipped steps
+    # discrete: if the states is discrete, how many discrete states for each value function
+    num_discrete_states = 5  # Example value, adjust as needed
+    model_name='{}_timsteps_direct_discrete_{}'.format(target_skippped_steps, num_discrete_states)
     data_paths = create_loading_paths(dataset_skipped_steps, timeout, buffer_size, random_goal, max_surfix)
     raw_data = combine_load_data(data_paths)
     num_vf = 4
+  
     raw_data = pre_process_new_dataset(raw_data,dataset_skipped_steps, target_skippped_steps, num_vf)
     np.random.shuffle(raw_data)
     vali_dataset_len = int(np.shape(raw_data)[0] * 0.2)
@@ -286,15 +502,28 @@ def main():
     print(np.shape(vali_raw_data))
     print(np.shape(train_raw_data))
     print(np.shape(raw_data))
-    train_loader = torch.utils.data.DataLoader(VFDynamicDataset(train_raw_data, num_vf), batch_size=1024, shuffle=True)
-    val_loader = torch.utils.data.DataLoader(VFDynamicDataset(vali_raw_data, num_vf), batch_size=1024, shuffle=True)
+    train_loader = torch.utils.data.DataLoader(VFDynamicDatasetDiscrete(train_raw_data, num_vf, num_discrete_states), batch_size=1024, shuffle=True)
+    val_loader = torch.utils.data.DataLoader(VFDynamicDatasetDiscrete(vali_raw_data, num_vf, num_discrete_states), batch_size=1024, shuffle=True)
     
-    
-    dy_model = VFDynamicsMLPWithDropout(num_vf)
+    dy_model = DiscreteVFDynamicsMLP(num_discrete_states, num_vf)
     trainer = VFDynamicTrainer(dy_model, train_loader, val_loader, epochs, model_name, device)
     trainer.train()
     
+def test_discrete_states():
+    num_discrete_states = 100  # Example value, adjust as needed
+    num_discrete_actions = 4  # Example value, adjust as needed
+    num_vf = 4
+    num_samples = 2
+    states = torch.rand(num_samples, num_vf) * 2 - 1  # Random states in the range [-1, 1]
+    actions = torch.randint(0, num_discrete_actions, (num_samples,))  # Random actions in the range [0, num_discrete_actions-1]
+
+    one_hot_states = discrete_state_to_one_hot(states, num_discrete_states)
+    # transform one_hot_states to one dimension
+    one_hot_states = one_hot_states.view(num_samples, -1)
+    print(one_hot_states.shape)
+    
 if __name__ == "__main__":
+    # test_discrete_states()
     main()
     #test_random_shooting()
     

@@ -1,0 +1,1 @@
+{"method": "randomshooting", "random seed": "123", "STL task": "AND {|EVENTUALLY[0:6] (REACH YELLOW)|,|EVENTUALLY[5:12] (REACH RED)|}", "controls": [3, 3, 3, 3, 3, 3, 2, 2, 0, 2], "cost": 0.13928992748260494, "optimizing time": 21.40059518814087}

@@ -5,7 +5,7 @@ __pycache__/
 
 # C extensions
 *.so
-
+/VFSTL/dynamic_models
 # Distribution / packaging
 .Python
 env/
