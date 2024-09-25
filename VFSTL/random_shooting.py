@@ -105,7 +105,7 @@ def get_stl_cost_function(stl_spec: str):
 
 
 def test_random_shooting():
-        # Check if CUDA is available
+    # Check if CUDA is available
     if torch.cuda.is_available():
         device = torch.device("cuda")
         print("CUDA is available. Training on GPU.")

@@ -144,7 +144,7 @@ class MonteCarloTreeSearchNode:
         # end_time = datetime.now()
         # print('Time Of RollOut Once {}'.format(end_time - start_time))
 
-        return torch.max(stl_robs)
+        return torch.mean(stl_robs)
 
     def backpropagate(self, reward):
         self._number_of_visits += 1.
@@ -463,70 +463,70 @@ def test_mcts_controller(stl_spec:str):
     video_rec.close()
     env.close()
 
-# if __name__ == '__main__':
-    # stl_spec = 'eventually[0,4](W0 >= 0.8 and eventually[0,5] (J0 >= 0.8))'
+if __name__ == '__main__':
+    stl_spec = 'eventually[0,4](W0 >= 0.8 and eventually[0,5] (J0 >= 0.8))'
     # stl_spec = 'eventually[0,5] (J0 >= 0.8)'
     # test_mcts_controller(stl_spec=stl_spec)
 
-    # device = torch.device("cpu")
+    device = torch.device("cpu")
 
-    # # lower level policy
-    # # model_path = '../GCRL-LTL/zones/models/goal-conditioned/best_model_ppo_8'
-    # model_path = '/app/vfstl/src/GCRL-LTL/zones/models/goal-conditioned/best_model_ppo_8'
-    # sys.path.append("/app/vfstl/src/GCRL-LTL/zones")
-    # policy_model = PPO.load(model_path, device=device)
-    # timeout = 10000
-    # env = ZoneRandomGoalEnv(
-    #     env=gym.make('Zones-8-v0', timeout=timeout),
-    #     primitives_path='/app/vfstl/src/GCRL-LTL/zones/models/primitives', 
-    #     goals_representation=get_zone_vector(),
-    #     use_primitves=True,
-    #     rewards=[0, 1],
-    # )
+    # lower level policy
+    # model_path = '../GCRL-LTL/zones/models/goal-conditioned/best_model_ppo_8'
+    model_path = '/app/vfstl/src/GCRL-LTL/zones/models/goal-conditioned/best_model_ppo_8'
+    sys.path.append("/app/vfstl/src/GCRL-LTL/zones")
+    policy_model = PPO.load(model_path, device=device)
+    timeout = 10000
+    env = ZoneRandomGoalEnv(
+        env=gym.make('Zones-8-v0', timeout=timeout),
+        primitives_path='/app/vfstl/src/GCRL-LTL/zones/models/primitives', 
+        goals_representation=get_zone_vector(),
+        use_primitves=True,
+        rewards=[0, 1],
+    )
 
-    # # set up video
-    # env.metadata['render.modes'] = ['rgb_array']
-    # video_rec = VR.VideoRecorder(env, path = "./result.mp4")
+    # set up video
+    env.metadata['render.modes'] = ['rgb_array']
+    video_rec = VR.VideoRecorder(env, path = "./result.mp4")
     
 
-    # # upper level policy
-    # vf_num = 4
-    # max_step = 10
-    # model = VFDynamicsMLP(vf_num).to(device=device)
-    # model.load_state_dict(torch.load('/app/vfstl/src/VFSTL/dynamic_models/test_model_20240307_085639_11', map_location=device))
-    # dynamic = VFDynamics(model, vf_num)
+    # upper level policy
+    vf_num = 4
+    max_step = 10
+    model = VFDynamicsMLPLegacy(vf_num).to(device=device)
+    model.load_state_dict(torch.load('/app/vfstl/src/VFSTL/dynamic_models/test_model_20240307_085639_11', map_location=device))
+    dynamic = VFDynamics(model, vf_num)
 
-    # obs = env.reset()
-    # init_state = torch.from_numpy(from_real_dict_to_vector(get_all_goal_value(obs, policy_model.policy, get_zone_vector(), device))).to(device)
+    obs = env.reset()
+    init_state = torch.from_numpy(from_real_dict_to_vector(get_all_goal_value(obs, policy_model.policy, get_zone_vector(), device))).to(device)
 
-    # root = MonteCarloTreeSearchNode(init_state, dynamic, max_step, stl_spec, cur_step=0)
-    # root.build_tree(50000)
-    # controls, states = best_action_sequence(root)
+    root = MonteCarloTreeSearchNode(init_state, dynamic, max_step, stl_spec, cur_step=0)
+    root.build_tree(50000)
+    controls, states = best_action_sequence(root)
 
-    # # print(controls)
-    # # print(states)
+    # print(controls)
+    # print(states)
 
-    # # plot
-    # T_horizon = 10
-    # skill_timesteps = 100
-    # traj = env.env.robot_pos[0:2]
+    # plot
+    T_horizon = 10
+    skill_timesteps = 100
+    traj = env.env.robot_pos[0:2]
 
-    # for i in range(0, T_horizon):
-    #     frame = env.fix_goal(env.goals[controls[i]])
-    #     print(np.shape(frame))
-    #     for j in range(0, skill_timesteps):
-    #         action, _ = policy_model.predict(env.current_observation(), deterministic=True)
-    #         obs, reward, eval_done, info = env.step(action)
-    #         traj = np.vstack((traj, env.env.robot_pos[0:2]))
-    #         video_rec.capture_frame()
-    #         time.sleep(0.0001)
-    #     real_value = torch.from_numpy(from_real_dict_to_vector(get_all_goal_value(obs, policy_model.policy, get_zone_vector(), device))).to(device)
-    #     print('------------real value--------------')
-    #     print(real_value)
+    for i in range(0, T_horizon):
+        frame = env.fix_goal(env.goals[controls[i]])
+        print(np.shape(frame))
+        for j in range(0, skill_timesteps):
+            action, _ = policy_model.predict(env.current_observation(), deterministic=True)
+            obs, reward, eval_done, info = env.step(action)
+            traj = np.vstack((traj, env.env.robot_pos[0:2]))
+            video_rec.capture_frame()
+            time.sleep(0.0001)
+        real_value = torch.from_numpy(from_real_dict_to_vector(get_all_goal_value(obs, policy_model.policy, get_zone_vector(), device))).to(device)
+        print('------------real value--------------')
+        print(real_value)
 
-    # video_rec.close()
-    # plot_traj_2d(env, traj)
-    # env.close()
+    video_rec.close()
+    plot_traj_2d(env, traj)
+    env.close()
 
 
 

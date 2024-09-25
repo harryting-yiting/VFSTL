@@ -3,6 +3,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# ignore the docker image
+discrete_mcts
+
 # C extensions
 *.so
 
