@@ -12,17 +12,20 @@ from math import sqrt, log
 # system tools
 from tqdm import tqdm
 import sys
+from copy import deepcopy
 
 sys.path.append('/app/vfstl/src/GCRL-LTL/zones')
+sys.path.append('/app/vfstl/src/VFSTL/vfs_dynamic')
 # our packages
 from train_dynamics import VFDynamicsMLPLegacy, VFDynamics
-
+from vfs_env import *
 
 # constants
 c = 1.0                                 # exploration parameter of mcts
 smoothing_factor = 100                  # smoothing factor for the stl robustness
 batch_size = 32                         # batch size for the rollout in mcts
 
+nodes_count = 0
 
 class MCTSNode:
     def __init__(self, state, dynamic, action, device, parent=None) -> None:
@@ -60,14 +63,15 @@ class MCTSNode:
         return (self.rewards / self.visits) + c * sqrt(log(top_node.visits) / self.visits)
     
     def move(self, action):
-        child_state = self.dynamics.one_step_simulation(torch.tensor(action).to(self.device).view(1), self.state[None, :].to(self.device).view(-1, 4))
+        with torch.no_grad():
+            child_state = self.dynamic.one_step_simulation(torch.tensor(action).to(self.device).view(1), self.state[None, :].to(self.device).view(-1, 4))
         return child_state[0].cpu()
 
     def get_possible_actions(self):
         '''
         extract possible actions from the dynamics
         '''
-        return list(range(self.dynamics.size_discrete_actions))
+        return list(range(self.dynamic.size_discrete_actions))
     
     def next(self):
         ''' 
@@ -94,19 +98,83 @@ class MCTSNode:
         raise NotImplementedError           # child class might have different rollout strategy
 
 
-class 
+class MCTSNodeReward(MCTSNode):
+    def __init__(self, state, dynamic, action, device, reward_env, parent=None) -> None:
+        super().__init__(state, dynamic, action, device, parent)
+        
+        # reward environment object
+        self.reward_env = reward_env
+
+    def move(self, action):
+        with torch.no_grad():
+            child_state = self.dynamic.one_step_simulation(torch.tensor(action).to(self.device).view(1), self.state[None, :].to(self.device).view(-1, 4))
+        return child_state[0].cpu()
+
+    def create_children(self):
+        
+        actions = self.get_possible_actions()
+
+        children = {}
+        for action in actions:
+            reward_env = deepcopy(self.reward_env)
+            child_state = self.move(action)
+            reward_env.current_step += 1
+            children[action] = MCTSNodeReward(child_state, self.dynamic, action, self.device, reward_env, parent=self)
+
+        self.children = children
+    
+    def explore(self, nodes_count):
+        current = self
+
+        while current.children:
+            children = current.children
+            action, current = max(children.items(), key=lambda x: x[1].getUCBscore())
+
+        if current.visits < 1:
+            reward = current.rollout()
+        elif current.reward_env.is_termnial():
+            reward = current.rollout()
+        else:
+            nodes_count += 1
+            current.create_children()
+            # debug print
+            # print('building new nodes, this is the', nodes_count, 'th node')
+            if current.children:
+                current = random.choice(current.children)
+            reward = current.rollout()
+
+        # debug print
+        # print('reward:', reward)
+        # update statistics and backpropagate
+        while current:
+            current.visits += 1
+            current.rewards += reward
+            current = current.parent
+
+        return nodes_count
+
+    def rollout(self):
+        reward = 0
+        state = self.state
+        reward_env = deepcopy(self.reward_env)
+        actions = self.get_possible_actions()
+        while not reward_env.is_termnial():
+            reward += reward_env.reward(state)
+            state = self.move(random.choice(actions))
+
+        return reward
 
 
 class MCTSNodeSTL(MCTSNode):
-    def __init__(self, state, dynamics, max_step, cur_step, action, stl_formula, device, parent=None):
-        super().__init__(state, dynamics, action, device, parent)
+    def __init__(self, state, dynamic, max_step, cur_step, action, stl_formula, device, parent=None):
+        super().__init__(state, dynamic, action, device, parent)
         '''
             This class is for STL guided MCTS, the reward is measured by calculating the average robustness of 
             the STL formula over the trajectory. This tree has a fixed length due to STL measure a fixed length.
         '''
 
         # steps in environment (e.g. tree depth)
-        self.max_step = max_step
+        self.max_step = max_step - 1        
         self.cur_step = cur_step
 
         # parent node
@@ -130,13 +198,13 @@ class MCTSNodeSTL(MCTSNode):
         children = {}
         for action in actions:
             child_state = self.move(action)
-            children[action] = MCTSNodeSTL(child_state, self.dynamics, self.max_step, self.cur_step+1, action, self.stl_formula, self.device, parent=self)
+            children[action] = MCTSNodeSTL(child_state, self.dynamic, self.max_step, self.cur_step+1, action, self.stl_formula, self.device, parent=self)
             # self.dynamics.one_step_simulation(torch.tensor(action).to(device).view(1), state[None, :].to(device)).view(4)
 
         self.children = children
 
 
-    def explore(self):
+    def explore(self, nodes_count):
         
         '''
         The search along the tree is as follows:
@@ -166,6 +234,7 @@ class MCTSNodeSTL(MCTSNode):
             reward = current.rollout()
         else:
             assert current.visits == 1, "Error: the node is not terminal neither a leaf"
+            nodes_count += 1
             current.create_children()
             if current.children:
                 current = random.choice(current.children)          # TODO: dictonary can not be sampled
@@ -180,6 +249,9 @@ class MCTSNodeSTL(MCTSNode):
             current.rewards += reward
             current = current.parent
             
+        return nodes_count
+    
+    
     def is_terminal(self):
         '''
         check if the current node is terminal (reach max_depth)
@@ -206,7 +278,7 @@ class MCTSNodeSTL(MCTSNode):
         if T > 0:
             rand_controls = torch.randint(0, self.state.shape[0], (N, T)).to(device)
             with torch.no_grad():
-                roll_out_states = self.dynamics.forward_simulation(rand_controls, cur_vfs)
+                roll_out_states = self.dynamic.forward_simulation(rand_controls, cur_vfs)
         else:
             # Handle the case where T is 0
             roll_out_states = torch.empty(N, 0, self.state.shape[0]).to(device)

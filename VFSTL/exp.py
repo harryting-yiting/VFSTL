@@ -1,7 +1,7 @@
 import argparse
 import torch
 from stable_baselines3 import PPO
-from train_dynamics import VFDynamicsMLPLegacy
+from VFSTL.vfs_dynamic.train_dynamics import VFDynamicsMLPLegacy
 import gym
 from envs import ZoneRandomGoalEnv
 from envs.utils import get_zone_vector

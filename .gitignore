@@ -5,6 +5,8 @@ __pycache__/
 
 # ignore the docker image
 discrete_mcts
+*.mp4
+*.json
 
 # C extensions
 *.so

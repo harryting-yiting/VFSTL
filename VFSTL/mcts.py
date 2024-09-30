@@ -22,8 +22,8 @@ sys.path.append("/app/vfstl/src/GCRL-LTL/zones")
 from envs import ZoneRandomGoalEnv
 from envs.utils import get_zone_vector
 from gym.wrappers.monitor import video_recorder as VR
-from collect_skill_trajectories import get_all_goal_value, from_real_dict_to_vector
-from train_dynamics import VFDynamicsMLPLegacy, VFDynamics, VFDynamicsMLPWithDropout
+from VFSTL.vfs_dynamic.collect_skill_trajectories import get_all_goal_value, from_real_dict_to_vector
+from VFSTL.vfs_dynamic.train_dynamics import VFDynamicsMLPLegacy, VFDynamics, VFDynamicsMLPWithDropout
 
 ZONE_OBS_DIM = 24
 

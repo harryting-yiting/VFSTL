@@ -1,0 +1,5 @@
+Average pred_vfs_stl: 0.19027765329375287
+Average gt_vfs_stl: 0.23173934818655298
+Average state_stl: -1.5052342670010233
+Success rate: 0.45
+Average number of collide: 0.0

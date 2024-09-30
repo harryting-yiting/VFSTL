@@ -6,9 +6,9 @@ import gym
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data.dataset import Dataset
 import sys
-from collect_skill_trajectories import get_all_goal_value, from_real_dict_to_vector
+from VFSTL.vfs_dynamic.collect_skill_trajectories import get_all_goal_value, from_real_dict_to_vector
 from stable_baselines3 import PPO
-from train_dynamics import VFDynamicsMLPWithDropout, VFDynamicsMLPLegacy
+from VFSTL.vfs_dynamic.train_dynamics import VFDynamicsMLPWithDropout, VFDynamicsMLPLegacy
 # sys.path.insert(0, '/app/vfstl/lib/rtamt/build/lib/')
 import rtamt
 import time
