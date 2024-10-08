@@ -220,7 +220,7 @@ def experiments(num_reach, num_avoid, num_experiment, method):
 
     # initialize the constants
     vf_num = 4                      # vfs dim
-    T_horizon = 10                  # option steps
+    T_horizon = 20                  # option steps
     skill_timesteps = 100           # env steps per option
 
     smoothing_factor = 100          # slt smoothing factor
@@ -253,7 +253,7 @@ def experiments(num_reach, num_avoid, num_experiment, method):
 
     # Create a folder for the current run of experiments
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    save_folder = f"./{method}_experiment_results_{timestamp}"
+    save_folder = f"./always_reach_T=20_iter=15w/{method}_experiment_results_{timestamp}"
     os.makedirs(save_folder, exist_ok=True)
 
     # Initialize accumulators for statistics
@@ -288,7 +288,7 @@ def experiments(num_reach, num_avoid, num_experiment, method):
             open_loop_options = RewardMCTSOpenLoopOptions(dynamics, reward_env, device, T_horizon)
 
         # get the option sequences
-        options, vfs_seq, nodes_count = open_loop_options.get_options(init_vfs.cpu())
+        options, vfs_seq, nodes_count = open_loop_options.get_options(init_vfs.cpu(), iterations=150000)
         vfs_seq  = torch.stack(vfs_seq).unsqueeze(0)                                                # convert to tensor
 
         # recoidng statistics
@@ -376,8 +376,8 @@ if __name__ == '__main__':
         for num_avoid in num_avoids:
             print(f"Running experiments with {num_reach} target zones and {num_avoid} avoid zones.")
             experiments(num_reach, num_avoid, 100, 'stl')
-            experiments(num_reach, num_avoid, 100, 'SparseR')
-            experiments(num_reach, num_avoid, 100, 'DenseR')
+            # experiments(num_reach, num_avoid, 100, 'SparseR')
+            # experiments(num_reach, num_avoid, 100, 'DenseR')
     # experiments(args)
 
     

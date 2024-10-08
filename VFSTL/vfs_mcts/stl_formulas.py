@@ -127,7 +127,7 @@ def reach_avoid_vfs(nt, reach_vfs, avoid_vfs, reach_threshold, avoid_threshold):
         # print("i: ", i)
         # print("integer: ", integer)
 
-        reach_stls.append(Eventually(start, end, AP(lambda x: x[..., reach_vfs[integer]] - reach_threshold, comment=f"REACH {index_to_vfs[reach_vfs[integer]]}")))
+        reach_stls.append(Always(start, end, AP(lambda x: x[..., reach_vfs[integer]] - reach_threshold, comment=f"REACH {index_to_vfs[reach_vfs[integer]]}")))
 
     avoid_stls = []
     for i in avoid_vfs:
@@ -182,7 +182,7 @@ def reach_avoid_states(env, nt, reach_zone=None, avoid_zone=None):
         # print("i: ", i)
         # print("integer: ", integer)
 
-        reach_stls.append(Eventually(start, end, AP(lambda x: zone_r**2 - ((x[..., 0] - zone_poses[reach_zone[integer]][0])**2 + (x[...,1]- zone_poses[reach_zone[integer]][1])**2), comment=f"REACH {reach_zone[i]}")))
+        reach_stls.append(Always(start, end, AP(lambda x: zone_r**2 - ((x[..., 0] - zone_poses[reach_zone[integer]][0])**2 + (x[...,1]- zone_poses[reach_zone[integer]][1])**2), comment=f"REACH {reach_zone[i]}")))
 
     
     # reach_stls = []
