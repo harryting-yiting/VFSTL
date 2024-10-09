@@ -1,4 +1,5 @@
 import numpy as np
+import json
 import torch
 import torch.nn as nn
 from datetime import datetime
@@ -6,18 +7,22 @@ import gym
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data.dataset import Dataset
 import sys
-from VFSTL.vfs_dynamic.collect_skill_trajectories import get_all_goal_value, from_real_dict_to_vector, ZONE_OBS_DIM
+from collect_skill_trajectories import get_all_goal_value, from_real_dict_to_vector, ZONE_OBS_DIM
 from stable_baselines3 import PPO
-from VFSTL.vfs_dynamic.train_dynamics import VFDynamics, VFDynamicsMLPLegacy
-import rtamt
+from train_dynamics import VFDynamics, VFDynamicsMLPLegacy
+# import rtamt
 import time
 #from gym.wrappers import RecordVideo
 from gym.wrappers.monitor import video_recorder as VR
 import math
+
+from vfs_mcts.lib_stl_core import *
+
 sys.path.append("/app/vfstl/src/GCRL-LTL/zones")
 from envs import ZoneRandomGoalEnv
 from envs.utils import get_zone_vector
 from rl.traj_buffer import TrajectoryBufferDataset
+
 
 class RandomShootingOptimization():
 
@@ -39,7 +44,8 @@ class RandomShootingOptimization():
             # run simulation
             # states dimsion: N * (T + 1) * M
             # pre_states: t*M
-            states = self.dynamics.forward_simulation(controls, init_state)
+            with torch.no_grad():
+                states = self.dynamics.forward_simulation(controls, init_state)
             states_add_init = torch.cat((init_state.repeat(batch_size, 1, 1 ), states), dim=1)
             if pre_states != None:
                  states_add_init = torch.cat((pre_states.repeat(batch_size, 1, 1 ), states_add_init), dim=1)
@@ -55,47 +61,33 @@ class RandomShootingOptimization():
 
 
 def get_stl_cost_function(stl_spec: str):
-    
+
+
     def stl_cost_fn(states):
-        # state N* T+1(the one is the initail state) * M
-        spec = rtamt.StlDiscreteTimeOfflineSpecification()
-        spec.declare_var('J0', 'float')
-        spec.declare_var('W0', 'float')
-        spec.declare_var('R0', 'float')
-        spec.declare_var('Y0', 'float')
-        #spec.spec = 'eventually[0,2]((J0 >= 0.8) and eventually[0,2](W0 >= 0.8))'
-        #spec.spec = 'not ((J0 > 0.8) or (R0 > 0.8) or (Y0 > 0.8)) until[0, 3] ((W0 > 0.8) and ((not ((J0 > 0.8) or (R0 > 0.8) or (W0 > 0.8))) until[0, 3] (Y0 > 0.8)))'
-        #spec.spec = 'eventually[0,10](W0 >= 0.8)'
-        spec.spec = stl_spec
-        try:
-            spec.parse()
-            #spec.pastify()
-        except rtamt.RTAMTException as err:
-            print('RTAMT Exception: {}'.format(err))
-            sys.exit()
 
         J = states[:,:, 0]
         W = states[:,:, 1]
         R = states[:,:, 2]
         Y = states[:,:, 3]
 
-        horizon = J.size()[1]
+        nt = J.size()[1]
         batch_size = states.size()[0]
-        # tiemar = torch.tensor([i for i in range(0, J.size()[1])]).repeat((states.size()[0], 1)).T.to(device=states.device)
-        s = time.time()
-        timer = torch.arange(0, horizon, device=states.device).repeat((batch_size, 1))#.to(device=states.device)
-        e = time.time()
-        print('generating time: {}'.format(e-s))
-        dataset = {
-        'time':  timer,
-        'J0': J.T,
-        'W0': W.T,
-        'R0': R.T,
-        'Y0': Y.T,
-        }
-        m = spec.evaluate(dataset)
-        # m = torch.vstack(m)
-        robs = m[0,:]
+
+        # reach Y -> reach R 
+        Reach1 = Eventually(0, nt//2, AP(lambda x: x[..., 3] - 0.8, comment="REACH YELLOW"))
+        Reach2 = Eventually(nt//2, nt, AP(lambda x: x[..., 2] - 0.8, comment="REACH RED"))
+        stl = ListAnd([Reach1, Reach2])
+        
+        # reach = Always(0, nt, AP(lambda x: x[..., 0] - 0.9, comment="STAY BLACK"))
+        # avoid = Always(0, nt, AP(lambda x: 0.6 - x[..., 1], comment="AVOID WHITE"))
+        # stl = ListAnd([reach, avoid])
+
+        # print(stl)
+        stl.update_format("word")
+        # print(stl)
+        exp_info['STL task'] = str(stl)
+        robs = stl(states, 100, d={"hard":True})[..., 0]
+
         return robs * -1
     
     return stl_cost_fn
@@ -105,7 +97,7 @@ def get_stl_cost_function(stl_spec: str):
 
 
 def test_random_shooting():
-    # Check if CUDA is available
+        # Check if CUDA is available
     if torch.cuda.is_available():
         device = torch.device("cuda")
         print("CUDA is available. Training on GPU.")
@@ -121,7 +113,7 @@ def test_random_shooting():
     timeout = 10000
     env = ZoneRandomGoalEnv(
         env=gym.make('Zones-8-v0', timeout=timeout), 
-        primitives_path='/app/vfstl/src/GCRL-LTL/zones/models/primitives', 
+        primitives_path='/app/vfstl/src/GCRL-LTL/zones/models/primitives',
         goals_representation=get_zone_vector(),
         use_primitves=True,
         rewards=[0, 1],
@@ -203,22 +195,31 @@ class RandomShootingController():
         
         if self.current_timestep == 0:
             init_values = torch.from_numpy(from_real_dict_to_vector(get_all_goal_value(obs, self.NNPolicy.policy, get_zone_vector(), self.device))).to(self.device)
+            
+            start_time = time.time()
             controls, states, cost = self.op.optimize(self.epoch, self.batch_size, False, init_values, self.device)
+            end_time = time.time()
+            execution_time = end_time - start_time
+            
+            exp_info['controls'] = controls.tolist()
+            exp_info['cost'] = cost.item() * -1
+            exp_info['optimizing time'] = execution_time
+            
             self.current_controls_plans = controls
             print(controls)
             # print(init_values)
             # print(states)
             print("cost")
             print(cost)
+
+            with open('./test_random', 'w') as f:
+                json.dump(controls.tolist(), f)
         
         new_n_horizon = math.floor(self.current_timestep / self.timesteps_pre_policy)
         current_goal_index = self.current_controls_plans[new_n_horizon]
         obs = np.concatenate((obs[:-ZONE_OBS_DIM], self.zone_vector[self.goals[current_goal_index]]))
         action, _ = self.NNPolicy.predict(obs, deterministic=True)
         
-        # if(self.prev_n_in_horizon != new_n_horizon or self.current_timestep == 0):
-        #     print(torch.from_numpy(from_real_dict_to_vector(get_all_goal_value(obs, self.NNPolicy.policy, get_zone_vector(), self.device))).to(self.device))
-        #     print(current_goal_index)
         # update class data
         self.current_timestep += 1
         self.prev_n_in_horizon = new_n_horizon
@@ -328,7 +329,7 @@ def test_random_shooting_controller(stl_spec:str):
     policy_model = PPO.load(model_path, device=device)
     timeout = 10000
     env = ZoneRandomGoalEnv(
-        env=gym.make('Zones-8-v0', timeout=timeout), 
+        env=gym.make('Zones-8-v1', timeout=timeout, map_seed=seed), 
         primitives_path='/app/vfstl/src/GCRL-LTL/zones/models/primitives', 
         goals_representation=get_zone_vector(),
         use_primitves=True,
@@ -337,7 +338,7 @@ def test_random_shooting_controller(stl_spec:str):
     )
     
     vf_num = 4
-    T_horizon = 10
+    T_horizon = 24
     skill_timesteps = 100
     
     model = VFDynamicsMLPLegacy(vf_num)
@@ -347,13 +348,14 @@ def test_random_shooting_controller(stl_spec:str):
     
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     env.metadata['render.modes'] = ['rgb_array']
-    video_rec = VR.VideoRecorder(env, path = "./test_{}_{}.mp4".format(stl_spec, timestamp))
-    controller = RandomShootingController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 65536, 100, device)
+    # video_rec = VR.VideoRecorder(env, path = "./test_{}_{}.mp4".format(stl_spec, timestamp))
+    video_rec = VR.VideoRecorder(env, path = f"./{file_name}.mp4")
+    controller = RandomShootingController(skill_timesteps, policy_model, dynamics, env.goals, T_horizon, 10000, 100, device)
     controller.setTarget(stl_spec)
     obs = env.reset()
     done = False
     while not done:
-        action, controller_done = controller.predict(obs)
+        action, controller_done, _ = controller.predict(obs)
         obs, reward, eval_done, info = env.step(action)
         done = controller_done
         video_rec.capture_frame()
@@ -364,6 +366,19 @@ def test_random_shooting_controller(stl_spec:str):
 if __name__ == "__main__":
     #stl_spec = 'not ((J0 > 0.8) or (R0 > 0.8) or (Y0 > 0.8)) until[0, 3] ((W0 > 0.8) and ((not ((J0 > 0.8) or (R0 > 0.8) or (W0 > 0.8))) until[0, 3] (Y0 > 0.8)))'
     stl_spec =  'eventually[0,4](R0 >= 0.8 and eventually[0,5] (Y0 >= 0.8))'
+    seed = 123
+    torch.manual_seed(seed)
+    current_time = datetime.now()
+    formatted_time = current_time.strftime("%Y-%m-%d_%H-%M-%S")
+    file_name = f'rs_{formatted_time}'
+    exp_info = {
+        'method': 'randomshooting', 
+        'random seed': str(seed)
+    }
+
     test_random_shooting_controller(stl_spec=stl_spec)
-    #test_random_shooting()
+
+    with open(f'{file_name}.json', 'w') as f:
+        json.dump(exp_info, f)
     
+    #test_random_shooting()

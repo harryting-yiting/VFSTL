@@ -138,7 +138,7 @@ def experiment():
     # use to degug the open loop options
     # initialize the constants
     vf_num = 4                      # vfs dim
-    T_horizon = 10                  # option steps
+    T_horizon = 20                  # option steps
     skill_timesteps = 100           # env steps per option
 
     # initialize cuda
@@ -170,9 +170,11 @@ def experiment():
     # stl_formula = reach_avoid_stl_formula(T_horizon)
     # stl_formula = sequential_reach_stl_formula(T_horizon)
     # stl_formula = sequential_avoid_stl_formula(T_horizon)
-    stl_formula = reach_black_avoid_others_stl_formula(T_horizon)
+    # stl_formula = reach_black_avoid_others_stl_formula(T_horizon)
     # reward_env = SparseReachAvoidReward([0], [1, 2, 3], max_step=100)
     # reward_env = SparseSequentialReachReward([2,3], max_step=100)
+    stl_formula = reach_avoid_vfs(T_horizon, [0, 1], [], 0.9, 0.2)
+    print(stl_formula)
 
     # initialize the env recording (TODO: need to write stl_spec and evaluation)
     env.metadata['render.modes'] = ['rgb_array']
@@ -189,10 +191,10 @@ def experiment():
     # open_loop_options = RewardMCTSOpenLoopOptions(dynamics, reward_env, device)
 
     # get the option sequences
-    options, vfs_seq = open_loop_options.get_options(init_vfs.cpu())
+    options, vfs_seq, _ = open_loop_options.get_options(init_vfs.cpu(), iterations=150000)
 
     # debug print
-    print(f'total number of nodes : {open_loop_options.node_count}')
+    # print(f'total number of nodes : {open_loop_options.node_count}')
     
     print(f'Option Sequences: {options}')
 
@@ -369,15 +371,18 @@ if __name__ == '__main__':
     # add('--method', type=str, default='stl', choices=['stl', 'sparseR', 'denseR'], help='Method to use (default: stl)')
     # args = parser.parse_args()
     
-    num_reaches = [1, 2, 3]
-    num_avoids = [0, 1, 2]
+    # num_reaches = [1, 2, 3]
+    # num_avoids = [0, 1, 2]
 
-    for num_reach in num_reaches:
-        for num_avoid in num_avoids:
-            print(f"Running experiments with {num_reach} target zones and {num_avoid} avoid zones.")
-            experiments(num_reach, num_avoid, 100, 'stl')
+    # for num_reach in num_reaches:
+    #     for num_avoid in num_avoids:
+    #         print(f"Running experiments with {num_reach} target zones and {num_avoid} avoid zones.")
+    #         experiments(num_reach, num_avoid, 100, 'stl')
             # experiments(num_reach, num_avoid, 100, 'SparseR')
             # experiments(num_reach, num_avoid, 100, 'DenseR')
     # experiments(args)
+
+    # experiments(2, 0, 1, 'stl')
+    experiment()
 
     

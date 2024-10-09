@@ -174,7 +174,7 @@ class MCTSNodeSTL(MCTSNode):
         '''
 
         # steps in environment (e.g. tree depth)
-        self.max_step = max_step - 1        
+        self.max_step = max_step        
         self.cur_step = cur_step
 
         # parent node
